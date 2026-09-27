@@ -1,0 +1,10 @@
+{
+  "repository": "owner/repo",
+  "pr_number": 312,
+  "publish": false,
+  "publish_mode": "dry-run",
+  "include_drafts": false,
+  "force_review": false,
+  "severity_threshold": "major",
+  "workspace_root": "/tmp/cao-pr-review"
+}

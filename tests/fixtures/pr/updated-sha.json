@@ -1,0 +1,1 @@
+{"number":312,"state":"open","draft":false,"title":"Fix offset commit","body":"Guard rebalance","user":{"login":"dev"},"base":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"head":{"ref":"fix","sha":"91ac79e0000000000000000000000000000000"}}

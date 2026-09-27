@@ -1,0 +1,1 @@
+{"findings":[{"severity":"major","category":"correctness","file":"src/consumer.py","line":12,"title":"Offset committed early","description":"Commit can race rebalance","evidence":"changed commit call at line 12","suggestion":"guard with assignment check","confidence":0.9}],"summary":"One correctness issue"}

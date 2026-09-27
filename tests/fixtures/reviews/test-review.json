@@ -1,0 +1,1 @@
+{"findings":[{"severity":"minor","category":"testing","file":"src/consumer.py","line":12,"title":"Missing rebalance regression","description":"Changed commit path lacks regression","evidence":"changed commit call at line 12","suggestion":"add rebalance test","confidence":0.8}],"summary":"One test gap"}

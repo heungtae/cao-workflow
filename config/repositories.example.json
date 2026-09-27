@@ -1,0 +1,4 @@
+{
+  "repositories": ["owner/repository"],
+  "note": "Pass repository explicitly to scripts/run.sh; this file documents deployment inventory only."
+}

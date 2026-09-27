@@ -1,0 +1,3 @@
+# Install as $CODEX_HOME/cao_pr_review_readonly.config.toml (default ~/.codex/).
+sandbox_mode = "read-only"
+approval_policy = "never"
