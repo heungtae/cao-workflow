@@ -1,13 +1,13 @@
 # CAO Workflow Management
 
-이 저장소는 CAO Workflow와 Agent Profile의 원본을 Git으로 관리하고 CAO runtime에 설치합니다. 첫 워크플로 `github-pr-review`는 GitHub의 열린 PR을 검색하고, 새 HEAD SHA만 Code/Security/Test 관점에서 리뷰한 뒤 결과를 PR에 게시합니다. GitHub 트리거는 포함하지 않습니다.
+이 저장소는 CAO Workflow와 Agent Profile의 원본을 Git으로 관리하고 CAO runtime에 설치합니다. `github-pr-review`는 GitHub의 열린 PR을 검색하고, 새 HEAD SHA를 Code/Security/Test 관점에서 검토합니다. 각 finding은 변경 줄의 inline review comment로, 전체 요약은 하나의 PR review 본문으로 게시합니다. 리뷰어는 CAO `step()`으로 소유자 전용 `workspace_root`에서 실행합니다.
 
 ## Prerequisites
 
 - Linux/WSL, CAO 2.5.0 이상 (`cao`, `cao-server`), Codex CLI, `git`, `gh`, `jq`, `tmux`, Python 3.11 이상
 - `cao-server` 실행 및 Codex 인증
-- `gh auth login` 또는 유효한 `GH_TOKEN`/`GITHUB_TOKEN`. 대상 저장소에 Contents read, Pull requests read, Issues read가 필요합니다. 게시 시 Issues write(comment mode) 또는 Pull requests write(review mode)가 필요합니다.
-- CAO 2.5.0 Codex provider의 기본 실행은 sandbox를 우회하므로, [Codex profile](config/cao_pr_review_readonly.config.toml)을 `$CODEX_HOME/cao_pr_review_readonly.config.toml`에 복사하세요(기본 위치 `~/.codex/`). 관리 스크립트의 `doctor`와 `run`이 이를 확인합니다. CAO 서버와 wrapper가 같은 `CODEX_HOME`을 사용해야 합니다.
+- `gh auth login` 또는 유효한 `GH_TOKEN`/`GITHUB_TOKEN`. 대상 저장소에 Contents read, Pull requests read, Issues read가 필요합니다. 게시에는 Pull requests write가 필요합니다.
+- [Codex profile](config/cao_pr_review_readonly.config.toml)을 `$CODEX_HOME/cao_pr_review_readonly.config.toml`에 복사하세요(기본 위치 `~/.codex/`). CAO profile의 `codexProfile`이 이 read-only 설정을 선택합니다. 관리 스크립트의 `doctor`와 `run`이 profile을 확인합니다. CAO 서버와 wrapper가 같은 `CODEX_HOME`을 사용해야 합니다.
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ make status
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --dry-run
 ```
 
-`--dry-run`도 실제 PR 컨텍스트 수집 및 Codex 리뷰 단계를 수행하지만 GitHub에 게시하지 않습니다. `cao workflow run`은 기본적으로 run id를 출력하고 완료까지 추적합니다. 이미 리뷰한 같은 HEAD SHA는 게시 여부에 관계없이 GitHub marker가 있으면 건너뜁니다. 게시하지 않은 dry-run에는 marker가 남지 않습니다.
+`--dry-run`도 실제 PR 컨텍스트 수집 및 CAO 리뷰 단계를 수행하지만 GitHub에 게시하지 않습니다. `cao workflow run`은 기본적으로 run id를 출력하고 완료까지 추적합니다. 같은 HEAD SHA와 workflow 버전의 marker가 있으면 건너뜁니다. 게시하지 않은 dry-run에는 marker가 남지 않습니다.
 
 ## Management
 
@@ -45,10 +45,10 @@ Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 
 ./scripts/run.sh github-pr-review --repository owner/repo
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --dry-run
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --publish-mode review
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review --severity-threshold critical
+./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review
 ```
 
-기본값은 `comment`이고 자동 APPROVE 또는 merge는 하지 않습니다. `review` mode의 quality gate는 threshold 이상의 finding이 있으면 REQUEST_CHANGES, 없으면 COMMENT review를 게시합니다. `--include-drafts`, `--base-branch`, `--workspace-root`, `--model`, `--no-publish`, `--detach`도 지원합니다. 자세한 입력과 정책은 [PR Review 문서](docs/GITHUB-PR-REVIEW.md)에 있습니다.
+기본값은 `review`입니다. 모든 finding을 inline review comment에, 최종 요약을 `COMMENT` review 본문에 넣습니다. 자동 APPROVE, REQUEST_CHANGES, merge는 하지 않습니다. `--include-drafts`, `--base-branch`, `--workspace-root`, `--model`, `--no-publish`, `--detach`도 지원합니다. 자세한 입력과 정책은 [PR Review 문서](docs/GITHUB-PR-REVIEW.md)에 있습니다.
 
 ## Structure
 
@@ -67,6 +67,7 @@ Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 
 - `make doctor`의 Codex profile 오류: `config/cao_pr_review_readonly.config.toml` 파일을 `$CODEX_HOME`에 복사하고 다시 확인합니다.
 - `gh auth` 오류: 기존 인증 또는 토큰 권한을 확인합니다. 토큰은 이 저장소에 저장하지 않습니다.
 - CAO server 연결 오류: `cao-server`를 실행하고 `CAO_API_PORT`가 서버 포트와 같은지 확인합니다.
+- CAO 단계 오류: 각 모델 호출은 `step()`으로 기록됩니다. 워크플로가 보내는 프롬프트는 고정 형식의 shell no-op 토큰이며, 유효한 JSON 응답이 없으면 게시를 중단합니다. CAO의 메모리 주입은 프롬프트 앞에 별도 텍스트를 붙일 수 있으므로, 이 서버에서는 주입 대상 메모리가 비어 있는지 확인하거나 메모리 주입을 꺼야 이 보호가 유지됩니다.
 - `unmanaged` 또는 `modified`: CAO runtime 파일을 직접 고치지 말고 소유권과 원본을 확인합니다. 기존 파일을 무조건 덮어쓰지 않습니다.
 - 큰 PR에서 제한 오류: 100개 열린 PR, 300개 변경 파일, 파일당 24KB patch, 컨텍스트 chunk당 120KB를 넘으면 일부 자료만 조용히 리뷰하지 않고 실패하거나 제외 정책을 적용합니다.
 

@@ -16,12 +16,14 @@ Check out the prior Git revision in this repository and run `make update`. If th
 
 ## Observability and exit codes
 
-`cao workflow run` prints a run id; `cao workflow status RUN_ID`, `events RUN_ID`, and `result RUN_ID` show execution. The workflow output includes repository, PR number, SHA, start/end timestamps, result, finding count, and publish destination. CAO's journal records step statuses. The management scripts use exit code 0 success, 1 runtime failure, 2 validation failure, 3 dependency/config/ownership failure. Logs never intentionally include tokens.
+`cao workflow run` prints a run id; `cao workflow status RUN_ID`, `events RUN_ID`, and `result RUN_ID` show execution. CAO records each reviewer, aggregator, and publication gate `step()` in the run journal. The workflow output includes repository, PR number, SHA, start/end timestamps, result, finding count, and publish destination. The management scripts use exit code 0 success, 1 runtime failure, 2 validation failure, 3 dependency/config/ownership failure. Logs never intentionally include tokens.
 
 ## CAO upgrade
 
-Recheck `cao --version`, `cao workflow --help`, `cao profile --help`, profile validation, and workflow validation. Inspect any change to Codex provider sandbox behavior, workflow storage, script shim `step` contract, and input types. Validate and deploy in an isolated `CAO_HOME_DIR` before updating an active CAO home.
+Recheck `cao --version`, `cao workflow --help`, `cao profile --help`, profile validation, and workflow validation. Inspect any change to the CAO `step()` shim, Codex provider startup/status behavior, workflow storage, and input types. Validate and deploy in an isolated `CAO_HOME_DIR` before updating an active CAO home.
 
 ## Troubleshooting
 
-`doctor` diagnoses missing commands, invalid GitHub authentication, the `$CODEX_HOME/cao_pr_review_readonly.config.toml` file, CAO config, and deployed resources. If `cao workflow validate` cannot reach the server, start `cao-server` and match `CAO_API_PORT`. If a large PR exceeds bounds, narrow the PR or revise reviewed limits with tests and a workflow version bump. A stale HEAD during review blocks publish; rerun after the new commit appears.
+`doctor` diagnoses missing commands, invalid GitHub authentication, the `$CODEX_HOME/cao_pr_review_readonly.config.toml` file, CAO config, and deployed resources. If `cao workflow validate` cannot reach the server, start `cao-server` and match `CAO_API_PORT`. If Codex reports a folder trust problem, check that the fixed `workspace_root` has mode `0700` and its exact path is trusted in the named Codex profile; never trust individual PR checkout directories. CAO may mistake a Codex bootstrap failure for an idle shell; the workflow's step carrier is a fixed shell no-op token, and missing JSON fails before publication. CAO can prepend curated memory ahead of that carrier, so keep memory injection disabled or verify that this workflow receives an empty memory block. If a large PR exceeds bounds, narrow the PR or revise reviewed limits with tests and a workflow version bump. A stale HEAD during review blocks publish; rerun after the new commit appears.
+
+The incident-specific `supersede_v3_comment` publisher helper corrects an empty v3 comment only after it verifies the old and replacement comments have matching repository, PR, HEAD, workflow markers, and author. It does not run during normal reviews.

@@ -16,7 +16,7 @@ class ManagementTests(unittest.TestCase):
         manifest = manage.load_manifest()
         self.assertEqual(5, len(manifest["agents"]))
         defaults = json.loads((ROOT / "config/defaults.json").read_text())
-        self.assertEqual("comment", defaults["publish_mode"])
+        self.assertEqual("review", defaults["publish_mode"])
         manage.validate_defaults(defaults)
         broken = dict(defaults, workspace_root="relative/path")
         with self.assertRaises(manage.ManagementError):

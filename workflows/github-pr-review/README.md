@@ -1,6 +1,6 @@
-# github-pr-review v1
+# github-pr-review v5
 
-CAO 2.5.0 script-tier workflow. The deployable file is [workflow.py](workflow.py). The repository manifest installs it as `$CAO_HOME_DIR/workflows/github-pr-review.py` and installs its five Codex profiles first.
+CAO 2.5.0 script-tier workflow. The deployable file is [workflow.py](workflow.py). The manifest installs it as `$CAO_HOME_DIR/workflows/github-pr-review.py` and installs its five read-only Codex profiles first. The script invokes reviewers, aggregator, and publication gate through CAO `step()`. Each step receives only a shell-inert token; the review input is stored in an owner-only file. The deterministic publisher creates one GitHub COMMENT review containing inline comments and a final summary.
 
 Run through the wrapper:
 

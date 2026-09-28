@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "workflows": [{"name": "github-pr-review", "version": "v1", "source": "workflows/github-pr-review/workflow.py", "agents": ["pr-code-reviewer", "pr-security-reviewer", "pr-test-reviewer", "pr-review-aggregator", "pr-review-publisher"]}],
+  "workflows": [{"name": "github-pr-review", "version": "v5", "source": "workflows/github-pr-review/workflow.py", "agents": ["pr-code-reviewer", "pr-security-reviewer", "pr-test-reviewer", "pr-review-aggregator", "pr-review-publisher"]}],
   "agents": [
     {"name": "pr-code-reviewer", "source": "agents/pr-code-reviewer.md"},
     {"name": "pr-security-reviewer", "source": "agents/pr-security-reviewer.md"},

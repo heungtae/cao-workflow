@@ -1,6 +1,5 @@
 {
-  "publish_mode": "comment",
-  "severity_threshold": "major",
+  "publish_mode": "review",
   "include_drafts": false,
   "workspace_root": "/tmp/cao-pr-review"
 }

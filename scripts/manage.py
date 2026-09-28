@@ -184,7 +184,7 @@ def validate() -> dict:
 
 
 def validate_defaults(defaults: dict) -> None:
-    if defaults["publish_mode"] not in ("dry-run", "comment", "review") or defaults["severity_threshold"] not in ("critical", "major", "minor", "info"):
+    if defaults["publish_mode"] not in ("dry-run", "review"):
         raise ManagementError("Invalid default review policy", 2)
     if not isinstance(defaults["include_drafts"], bool) or not isinstance(defaults["workspace_root"], str):
         raise ManagementError("Invalid defaults schema", 2)
@@ -370,12 +370,11 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--pr", type=int, dest="pr_number")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-publish", action="store_true")
-    parser.add_argument("--publish-mode", choices=("dry-run", "comment", "review"))
+    parser.add_argument("--publish-mode", choices=("dry-run", "review"))
     parser.add_argument("--include-drafts", action="store_true")
     parser.add_argument("--force-review", action="store_true")
     parser.add_argument("--base-branch")
     parser.add_argument("--workspace-root")
-    parser.add_argument("--severity-threshold", choices=("critical", "major", "minor", "info"))
     parser.add_argument("--model")
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args(argv)
@@ -401,7 +400,7 @@ def run(argv: list[str]) -> None:
     # Address the exact deployed file. A server using another CAO_HOME_DIR then
     # rejects the path instead of running a different workflow with the same name.
     cmd = ["cao", "workflow", "run", str(dst), "--input", f"repository={args.repository}"]
-    for key in ("pr_number", "base_branch", "workspace_root", "severity_threshold", "model"):
+    for key in ("pr_number", "base_branch", "workspace_root", "model"):
         value = getattr(args, key, None)
         if value is None and key in defaults:
             value = defaults[key]
