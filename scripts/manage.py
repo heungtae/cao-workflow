@@ -253,7 +253,7 @@ def install(name: str | None) -> None:
     print(f"CAO Home: {home}")
 
 
-def uninstall(name: str | None, yes: bool) -> None:
+def uninstall(name: str | None, yes: bool, force: bool = False) -> None:
     manifest = selected(load_manifest(), name)
     home = cao_home()
     state = load_state(home)
@@ -263,12 +263,15 @@ def uninstall(name: str | None, yes: bool) -> None:
             record = state[kind].get(entry["name"])
             dst = target(home, kind, entry)
             if record:
-                if dst.is_symlink() or (dst.exists() and digest(dst) != record["sha256"]):
-                    raise ManagementError(f"Refusing modified resource: {dst}", 3)
+                modified = dst.is_symlink() or (dst.exists() and digest(dst) != record["sha256"])
+                context_modified = False
                 if kind == "agents":
                     context = profile_context(home, entry["name"])
-                    if context.is_symlink() or (context.exists() and digest(context) != record["sha256"]):
-                        raise ManagementError(f"Refusing modified profile context: {context}", 3)
+                    context_modified = context.is_symlink() or (context.exists() and digest(context) != record["sha256"])
+                if modified or context_modified:
+                    if not force:
+                        raise ManagementError(f"Refusing modified resource: {dst}", 3)
+                    print(f"Warning: Removing modified resource: {dst}", file=sys.stderr)
                 owned.append((kind, entry["name"], dst))
     print("Project-owned removal targets:")
     for kind, resource, dst in owned:
@@ -431,11 +434,12 @@ def main() -> None:
             sub.add_argument("name", nargs="?")
             if args.operation == "uninstall":
                 sub.add_argument("--yes", action="store_true")
+                sub.add_argument("--force", action="store_true")
             opts = sub.parse_args(rest)
             if args.operation == "install":
                 install(opts.name)
             else:
-                uninstall(opts.name, opts.yes)
+                uninstall(opts.name, opts.yes, opts.force)
         elif args.operation == "validate":
             validate()
         elif args.operation == "status":

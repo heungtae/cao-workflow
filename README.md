@@ -37,7 +37,7 @@ make status
 ./scripts/uninstall.sh [github-pr-review] --yes
 ```
 
-Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 설치 상태는 CAO 홈의 `cao-workflow-project-state.json`에 원본 저장소 경로와 SHA-256으로 기록됩니다. 이름이 같아도 다른 프로젝트 소유거나 runtime에서 수정된 파일은 덮어쓰거나 삭제하지 않습니다. Profile은 `cao install`/`cao profile remove`를 사용합니다. CAO 2.5.0에 workflow create/update가 없어 Python 스크립트를 CAO workflow 디렉터리에 원자적으로 배치합니다.
+Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 설치 상태는 CAO 홈의 `cao-workflow-project-state.json`에 원본 저장소 경로와 SHA-256으로 기록됩니다. 이름이 같아도 다른 프로젝트 소유인 파일은 덮어쓰거나 삭제하지 않습니다. Runtime에서 수정된 파일은 기본적으로 설치와 삭제를 중단합니다. 이 프로젝트 소유로 기록된 수정 리소스를 삭제하려면 `./scripts/uninstall.sh [github-pr-review] --yes --force`를 사용합니다. `--force`는 수정 여부 검사만 건너뛰며 소유권 검사는 유지합니다. Profile은 `cao install`/`cao profile remove`를 사용합니다. CAO 2.5.0에 workflow create/update가 없어 Python 스크립트를 CAO workflow 디렉터리에 원자적으로 배치합니다.
 
 ## PR Review
 

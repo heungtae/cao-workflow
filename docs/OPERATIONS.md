@@ -4,7 +4,7 @@
 
 Run `make doctor`, `make validate`, `make test`, `make install`, then `make status`. `make update` repeats the same validate-before-deploy path. Deployment state is in `$CAO_HOME_DIR/cao-workflow-project-state.json`; it records only this project's owned resources and their installed hashes. Run scripts from any working directory.
 
-`cao install` is used for profiles. Workflow files are atomically replaced because this CAO release has no workflow create/update command. `status` compares repository sources to CAO's local agent store, the CAO `agent-context` copy, and workflow files; it does not checksum provider-specific files outside CAO home. If a deployed file differs from the recorded hash, install and delete stop; reconcile manually after identifying its owner. Avoid editing runtime files directly.
+`cao install` is used for profiles. Workflow files are atomically replaced because this CAO release has no workflow create/update command. `status` compares repository sources to CAO's local agent store, the CAO `agent-context` copy, and workflow files; it does not checksum provider-specific files outside CAO home. If a deployed file differs from the recorded hash, install and default uninstall stop; reconcile manually after identifying its owner, or use the explicit uninstall override described below. Avoid editing runtime files directly.
 
 ## Rollback
 
@@ -13,6 +13,8 @@ Check out the prior Git revision in this repository and run `make update`. If th
 ## Uninstall
 
 `./scripts/uninstall.sh [github-pr-review] --yes` prints its exact target list. It removes only resources present in this project's state with matching deployed hashes. It never removes built-in or unrelated profiles. Workflow deletion uses the verified local path because a remote CAO server might point at a different home; the index is derived from disk. Profile removal uses CAO's CLI and then removes the matching owned `agent-context` copy. Provider-specific files outside CAO home may require CAO-specific cleanup when changing providers.
+
+Add `--force` to remove resources recorded as owned by this project even when the resource or profile context has been modified. The command prints a warning for each modified resource. This override skips the modification checks; ownership checks and the confirmation requirement remain. Use `--yes --force` for non-interactive removal.
 
 ## Observability and exit codes
 
