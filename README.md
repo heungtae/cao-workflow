@@ -71,4 +71,4 @@ Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 
 - `unmanaged` 또는 `modified`: CAO runtime 파일을 직접 고치지 말고 소유권과 원본을 확인합니다. 기존 파일을 무조건 덮어쓰지 않습니다.
 - 큰 PR에서 제한 오류: 100개 열린 PR, 300개 변경 파일, 파일당 24KB patch, 컨텍스트 chunk당 120KB를 넘으면 일부 자료만 조용히 리뷰하지 않고 실패하거나 제외 정책을 적용합니다.
 
-현재 환경에서 확인한 CAO CLI 계약은 [Architecture](docs/ARCHITECTURE.md)에 기록했습니다. 운영 및 rollback 절차는 [Operations](docs/OPERATIONS.md)에 있습니다.
+현재 환경에서 확인한 CAO CLI 계약은 [Architecture](docs/ARCHITECTURE.md)에 기록했습니다. 리뷰 후 조치를 순서대로 실행하는 제안은 [PR review → apply 설계](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md)에 있습니다. 운영 및 rollback 절차는 [Operations](docs/OPERATIONS.md)에 있습니다.
