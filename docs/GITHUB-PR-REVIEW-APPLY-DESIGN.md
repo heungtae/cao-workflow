@@ -1,195 +1,212 @@
-# GitHub PR review → apply 워크플로 설계
+# GitHub PR Review → Apply Workflow Design
 
-상태: **Implemented — 로컬 검증**. `github-pr-review` v6, `github-pr-apply` v1,
-상위 실행기와 수동 GitHub Action을 구현했다. 실제 대상 PR에서 모델 실행과
-GitHub 게시·push를 함께 수행한 운영 검증은 아직 하지 않았다.
+Status: **Implemented — local validation**. `github-pr-review` v6,
+`github-pr-apply` v1, the coordinator, and a manual GitHub Action are implemented.
+Operational validation combining model execution, GitHub review publication, and
+push against an actual target PR has not been performed.
 
-## 목표와 결정
+## Goals and Decisions
 
-하나의 실행 요청으로 지정한 PR을 리뷰하고, 그 실행이 생성한 리뷰의 조치 사항을
-같은 HEAD에서 순서대로 적용한다. 리뷰와 적용은 각각 독립적인 CAO 워크플로로
-유지한다. 저장소가 소유하는 상위 실행기(`scripts/run-review-apply.sh`)가
-`github-pr-review` 완료와 결과를 확인한 뒤 `github-pr-apply`를 시작한다.
-GitHub Action은 이 상위 실행기를 호출하는 진입점이다. 로컬 수동 실행도 같은
-실행기를 사용한다.
+One execution request reviews a specified PR and applies the findings from that
+review sequentially against the same HEAD. Review and apply remain independent
+CAO workflows. The repository-owned coordinator (`scripts/review_apply.py`,
+launched through `scripts/run.sh github-pr-review --apply` or
+`scripts/run-review-apply.sh`) verifies completion and results from
+`github-pr-review` before starting `github-pr-apply`. GitHub Actions and local
+manual execution use the same coordinator.
 
-CAO 2.5.0의 `cao_workflow` 공개 API에는 `step`, `run_step`, `get_inputs`,
-`emit_output`이 있고 자식 워크플로 호출 API는 없다. Python 워크플로에서
-`cao workflow run` 또는 HTTP API를 호출하면 기술적으로 별도 실행을 시작할 수
-있지만, 부모와 자식의 결과·취소·재개를 CAO가 연결하지 않는다. 따라서 다른
-CAO 워크플로를 내부에서 호출하지 않는다. GitHub Actions의 `workflow_call`은
-GitHub Actions 재사용 워크플로를 호출하는 기능이며 CAO 호출 기능은 아니다.
+The public `cao_workflow` API in CAO 2.5.0 exposes `step`, `run_step`, `get_inputs`,
+and `emit_output`, but no child workflow invocation API. A Python workflow can
+technically start a separate execution through `cao workflow run` or the HTTP API,
+but CAO does not connect parent and child results, cancellation, or resume state.
+The implementation therefore uses an external coordinator. GitHub Actions
+`workflow_call` invokes reusable GitHub Actions workflows; it does not invoke CAO workflows.
 
 ```mermaid
 flowchart LR
-  T[수동 실행 또는 GitHub Action] --> O[상위 실행기]
+  T[Manual execution or GitHub Action] --> O[Coordinator]
   O --> R[CAO github-pr-review]
   R --> G[GitHub COMMENT review]
   R --> O
-  O --> V[review ID · HEAD · 결과 검증]
+  O --> V[Validate review ID, HEAD, and results]
   V --> A[CAO github-pr-apply]
-  A --> P[격리된 후보 패치와 검증 결과]
-  P --> W[정책이 허용하면 결정적 Git 게시 단계]
+  A --> P[Isolated candidate patch and validation results]
+  P --> W[Deterministic Git publication if policy permits]
 ```
 
-두 개의 독립 GitHub Action을 `pull_request_review` 이벤트로 연결하지 않는다.
-`GITHUB_TOKEN`이 생성한 이벤트는 후속 Action을 시작하지 않을 수 있고, 이벤트만
-보면 어느 review 실행·HEAD의 결과인지 확정할 수 없다. GitHub Action을 두 job으로
-나눠야 한다면 하나의 Action에서 `needs`로 순서를 지정하고 검증된 ID와 SHA만
-전달한다. `workflow_run`은 GitHub Action 실행 완료 이벤트이지 CAO 워크플로
-완료 이벤트가 아니다. [GitHub 트리거](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),
-[재사용 워크플로](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).
+Two independent GitHub Actions are not chained through `pull_request_review`.
+Events created with `GITHUB_TOKEN` may not trigger subsequent Actions, and an event
+alone does not establish which review execution and HEAD produced the result.
+If two jobs are needed, use `needs` within one Action and pass only verified IDs
+and SHAs. `workflow_run` signals completion of a GitHub Action run, not a CAO workflow.
+See [GitHub triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
+and [reusable workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).
 
-## 진입점과 적용 범위
+## Entry Points and Scope
 
-첫 구현의 입력은 `repository=owner/name`과 양수 `pr_number`를 필수로 한다.
-열린 PR 전체 검색이나 여러 PR 동시 적용은 허용하지 않는다. 기본 적용 대상은
-**이번 상위 실행에서 생성한 CAO COMMENT review의 inline finding**이다. 이미
-게시된 리뷰를 이용한 재실행은 아래 재시도 규칙으로만 처리한다. 사람의 리뷰를
-직접 조치하는 별도 진입점은 이후에 명시적 `review_id`와 허용된 리뷰어 정책을
-추가할 때 구현한다. 일반 PR 댓글, 리뷰 답글, 승인/변경 요청 상태만으로는
-적용을 시작하지 않는다.
+The initial implementation requires `repository=owner/name` and a positive
+`pr_number`. Discovering all open PRs or applying changes to multiple PRs in one
+request is unsupported. The default input is the **inline findings from the CAO
+COMMENT review produced by this coordinator run**. Reusing an existing review
+follows the retry rules below. A dedicated entry point for directly addressing
+human reviews is deferred until explicit `review_id` selection and an allowed
+reviewer policy are introduced. General PR comments, review replies, or approval
+and change-request states alone do not start apply.
 
-`apply_mode=patch`를 기본값으로 한다. 격리 작업 디렉터리에 후보 diff와 검증
-결과를 남기되 PR 브랜치에 쓰지 않는다. `apply_mode=push`는 정책에서 허용한
-동일 저장소의 PR 브랜치에만 검증된 변경을 커밋·푸시하는 선택 모드다. 포크
-브랜치, 보호 브랜치, 닫힌 PR은 이 모드에서 거부한다. 자동 APPROVE,
-REQUEST_CHANGES, merge, 리뷰 스레드 해결은 범위 밖이다. 기본 모드를 `push`로
-바꾸려면 운영자가 대상 저장소의 권한과 테스트 정책을 별도로 정해야 한다.
+The default is `apply_mode=patch`: retain a candidate diff and validation results
+in an isolated directory without writing to the PR branch. `apply_mode=push`
+optionally commits and pushes verified changes only to policy-allowed PR branches
+in the same repository. Fork branches, protected branches, and closed PRs are
+rejected for push. Automatic APPROVE, REQUEST_CHANGES, merge, and review thread
+resolution are outside scope. Changing the default to `push` requires the operator
+to define repository permissions and test policy separately.
 
-GitHub Action의 첫 제공 형태는 `workflow_dispatch`와 신뢰된 CAO 실행기가 있는
-runner다. 관리 저장소와 대상 저장소가 다르면 대상 저장소의 PR 이벤트는
-관리 저장소의 Action을 자동으로 시작하지 않으므로, 대상에 신뢰된 dispatcher를
-설치하거나 수동 실행한다. Action은 관리 저장소의 고정된 코드 버전을 실행하고
-PR 브랜치에서 Action/워크플로 코드를 로드하지 않는다.
+The initial GitHub Action uses `workflow_dispatch` on a runner with a trusted CAO
+installation. When the manager and target repositories differ, target PR events
+do not automatically trigger the manager repository's Action. Install a trusted
+dispatcher in the target repository or run manually. The Action executes a fixed
+manager revision and never loads Action or workflow code from the PR branch.
 
-## 입력·출력 계약
+## Input and Output Contracts
 
-| 경계 | 필수 값 | 확인 규칙 |
+| Boundary | Required Values | Validation |
 | --- | --- | --- |
-| 상위 실행 요청 | `repository`, `pr_number`, `apply_mode`, 선택 `model` | `owner/name`, 열린 단일 PR, 허용된 모드 |
-| GitHub PR 스냅샷 | base 저장소, HEAD 저장소·브랜치·SHA, draft, 상태 | review 전후와 apply 게시 직전에 재조회 |
-| review 결과 | CAO run ID, `repository`, PR 번호, review workflow 버전, HEAD SHA, 결과, `review_id`, URL, finding 수 | `cao workflow result RUN_ID --json`의 완료 상태와 구조화된 `output` 검증 |
-| apply 입력 | `repository`, `pr_number`, 원래 `head_sha`, `base_sha`, `review_id`, `apply_mode`, `policy_path` | GitHub API에서 리뷰와 inline 댓글을 다시 조회; URL이나 모델 출력에서 ID를 추측하지 않음 |
-| apply 결과 | CAO run ID, 원래 HEAD, review ID, 상태, 변경 파일, 검사 결과, 후보 패치 위치, 선택적 새 commit SHA | 결과가 빠지거나 모순되면 실패 처리 |
+| Coordinator request | `repository`, `pr_number`, `apply_mode`, optional `model` | `owner/name`, one open PR, supported mode |
+| GitHub PR snapshot | Base repository, HEAD repository/branch/SHA, draft flag, state | Refetch before and after review and immediately before apply publication |
+| Review result | CAO run ID, `repository`, PR number, review workflow version, HEAD SHA, result, `review_id`, URL, finding count | Verify completed state and structured `output` from `cao workflow result RUN_ID --json` |
+| Apply input | `repository`, `pr_number`, original `head_sha`, `base_sha`, `review_id`, `apply_mode`, `policy_path` | Refetch review and inline comments through GitHub API; never infer IDs from URLs or model output |
+| Apply result | CAO run ID, original HEAD, review ID, state, changed files, check results, candidate patch path, optional new commit SHA | Fail on missing or inconsistent results |
 
-`github-pr-review` v6의 `publish()`는 GitHub POST 응답의 정수 `id`와 URL을
-`review_id`와 `review_url`로 반환한다. 기존 `publish_result` URL도 유지한다.
-HEAD뿐 아니라 base SHA도 출력하고 별도 base marker를 게시해, 같은 HEAD에서
-base가 달라져도 새 리뷰를 수행한다. 결과가 `skipped`이면 이번에 새
-review가 게시된 것으로 간주하지 않는다. 같은 repository·PR·HEAD·workflow
-버전의 소유 marker가 붙은 review를 조회해 작성자와 ID가 정확히 하나인지
-확인한 경우에만 재시도 경로에서 사용한다. `dry-run`, 게시 실패, finding 0개는
-apply를 시작하지 않는다. review의 finding 생성·선별 규칙을 변경하면
-workflow 버전을 올려 기존 HEAD marker와 구분한다.
+In `github-pr-review` v6, `publish()` returns the integer `id` and URL from the
+GitHub POST response as `review_id` and `review_url`. The existing `publish_result`
+URL is retained. Output includes base SHA as well as HEAD, and publication includes
+a separate base marker. A changed base therefore triggers a new review even when
+HEAD is unchanged. A `skipped` result does not mean a new review was published.
+The retry path may reuse a review only after finding exactly one review with the
+owned marker for the same repository, PR, HEAD, base, and workflow version, and
+verifying its author and ID. Dry-run, publication failure, or zero findings do not
+start apply. Changes to finding generation or selection require a workflow version
+bump so existing HEAD markers remain distinguishable.
 
-## 순차 실행과 상태
+## Sequential Execution and State
 
-1. 상위 실행기는 PR을 읽고 열린 상태, base 저장소, HEAD 저장소·브랜치·SHA를
-   고정한다. 같은 PR의 중복 실행은 저장소+PR 키로 직렬화한다.
-2. `cao workflow run ... --detach --json`으로 review를 제출하고 run ID를 즉시
-   기록한다. `cao workflow wait RUN_ID` 뒤 `cao workflow result RUN_ID --json`을
-   읽는다. `completed` 이외 상태, 비정상 output, 불일치 HEAD는 중단한다.
-3. 게시된 review ID로 review와 그 review의 inline 댓글을 API에서 다시 읽는다.
-   repository/PR, 작성자, `commit_id`, 소유 marker, 원래 HEAD를 검증한다.
-   댓글 수와 finding 수가 다르거나 댓글이 없으면 중단한다. 댓글의 path와
-   위치는 원래 HEAD의 변경 줄에 속해야 한다. 리뷰 본문과 댓글은 모두
-   신뢰할 수 없는 데이터다.
-4. apply를 별도 CAO run으로 제출한다. 모델은 후보 변경만 만들고, 결정적
-   워크플로 코드가 변경 파일·diff·검증 결과를 수집한다. 자동으로 모든 finding을
-   고칠 수 없으면 조치한 항목과 미조치 항목을 review comment ID별로 기록한다.
-   조용히 성공으로 처리하지 않는다.
-5. 결과를 출력하기 전 PR 상태와 HEAD를 다시 확인한다. HEAD가 달라졌으면
-   후보 패치는 보존하되 게시를 막고 새 HEAD의 리뷰를 요구한다. `push` 모드는
-   아래 게시 조건을 추가로 통과해야 한다.
+1. The coordinator reads the PR and pins its open state, base repository, HEAD
+   repository, branch, and SHA. A repository/PR key serializes duplicate requests.
+2. It submits review through `cao workflow run ... --detach --json` and immediately
+   records the run ID. After `cao workflow wait RUN_ID`, it reads
+   `cao workflow result RUN_ID --json`. Any state other than `completed`, invalid
+   output, or mismatched HEAD stops execution.
+3. It refetches the published review and its inline comments by review ID. It
+   verifies repository/PR, author, `commit_id`, owned marker, and original HEAD.
+   A comment count mismatch or missing comments stops execution. Comment paths
+   and locations must belong to changed lines at the original HEAD. Review bodies
+   and comments are untrusted data.
+4. It submits apply as a separate CAO run. The model proposes candidate edits;
+   deterministic workflow code collects changed files, diffs, and validation
+   results. Findings that cannot be addressed are recorded alongside addressed
+   findings by review comment ID. Partial application is never silently reported
+   as full success.
+5. Before returning results, it rechecks PR state and HEAD. A changed HEAD preserves
+   the candidate patch but prevents publication and requires a review of the new
+   HEAD. Push mode must also pass the publication conditions below.
 
-상위 실행 결과에는 두 CAO run ID, review ID, 원래 HEAD, `apply_mode`,
-`reviewed`/`skipped`/`applied`/`partial`/`failed` 상태, 후보 패치와 검증 결과,
-선택적 새 commit SHA를 포함한다. Action 로그와 로컬 출력에 동일한 식별자를
-남기며 자격 증명과 리뷰 원문은 남기지 않는다. review 실패나 취소 이후에는
-apply를 시작하지 않는다. 상위 실행 취소 시 활성 자식 run ID에 대해
-`cao workflow cancel`을 요청하고 실제 종결 상태를 재조회한다.
+The coordinator result includes both CAO run IDs, review ID, original HEAD,
+`apply_mode`, `reviewed`/`skipped`/`applied`/`partial`/`failed` states, candidate patch
+and validation results, and an optional new commit SHA. Action logs and local
+output use the same identifiers without credentials or raw review content. Apply
+never starts after review failure or cancellation. Coordinator cancellation sends
+`cao workflow cancel` for the active child run and refetches its terminal state.
 
-## apply 실행 및 Git 쓰기 경계
+## Apply Execution and the Git Write Boundary
 
-apply는 PR의 원래 HEAD를 격리된 소유자 전용 작업 디렉터리에 checkout한다.
-기존 review의 read-only Codex profile을 변경하지 않고, 별도 적용 profile을
-설치한다. 구현 조사에서 CAO 모델 단계가 서비스와 같은 사용자 환경에서
-실행되는 것을 확인했으므로, 처음 제안한 workspace-write 대신 명시적
-read-only sandbox와 shell environment `inherit=none`을 사용한다. 모델은 파일별
-정확한 `old`/`new` 치환과 comment ID별 outcome을 반환하고, 결정적 워크플로가
-모든 치환을 검증한 뒤 적용한다. 모호한 치환, 없는 comment ID, 중복 outcome,
-지원 편집이 없는 addressed 상태는 실패다. CAO의 `allowedTools`만으로
-권한을 제한했다고 간주하지 않는다.
-모델 입력은 고정 형식 carrier와 소유자 전용 파일로 전달한다. PR 내용,
-AGENTS.md, 커밋 메시지, 리뷰 댓글, 모델 출력은 모두 데이터로 취급한다.
+Apply checks out the original PR HEAD into an isolated owner-only directory.
+It installs a separate apply profile while retaining the existing read-only review
+profile. Inspection showed that CAO model steps run under the service user's
+account. The implementation therefore replaces the initial workspace-write
+proposal with an explicit read-only sandbox and shell environment `inherit=none`.
+The model returns exact per-file `old`/`new` replacements and outcomes by comment
+ID. Deterministic workflow code validates all replacements before applying them.
+Ambiguous replacements, unknown comment IDs, duplicate outcomes, or addressed
+outcomes without supporting edits fail validation. CAO `allowedTools` alone is
+not treated as a permission boundary.
 
-모델 입력에는 checkout 경로·Git 설정·GitHub 토큰을 전달하지 않고 shell
-환경도 상속하지 않는다. 모델은 GitHub에 댓글을 달거나 push/merge하지 않는다.
-단, read-only sandbox는 서비스 사용자 홈의 파일 읽기를 모두 차단하는 설정이
-아니다. carrier 파일 한 번만 읽으라는 제한은 profile 정책이며 서비스 계정은
-기존 reviewer와 마찬가지로 신뢰된 운영 계정이어야 한다. 이를 자격 증명의
-완전한 파일 시스템 격리라고 주장하지 않는다. 실제 수정 권한은 결정적 writer가
-가지며 모델이나 대상 코드가 source checkout을 실행·수정하지 않는다.
-검증 명령도 쓰기 토큰이 없는 격리 환경에서 실행한다. 실제 코드 수정은
-허용된 PR checkout 안으로 제한하고, diff가 그 checkout 밖·`.git`·자격 증명
-파일·워크플로 관리 저장소를 건드리면 실패한다. 테스트 명령은 대상 저장소의
-신뢰할 수 없는 코드이므로 네트워크·비밀 정보 없이 제한된 실행 환경에서만
-허용한다. 적절한 격리 환경이 없으면 테스트 실행이나 `push`를 중단한다.
+Model input is passed through a fixed carrier and an owner-only file. PR contents,
+AGENTS.md, commit messages, review comments, and model output are treated as data.
+Model input excludes checkout paths, Git configuration, and GitHub tokens, and the
+model does not inherit the shell environment. The model does not publish comments,
+push, or merge.
 
-`push` 모드는 결정적 게시 단계만 수행한다. PR head 저장소가 base 저장소와
-같고 정책 허용 브랜치인지 검사한다. 원격 ref가 원래 HEAD인지 마지막으로
-확인한 후, 검증된 diff만 커밋한다. 새 commit의 유일한 parent가 원래 HEAD인지
-검사하고, 해당 ref의 expected-SHA lease로 atomic하게 push한다. 구현은
-`--force-with-lease=REF:ORIGINAL_SHA`를 쓰지만, parent 검사가 이력 재작성을
-금지하고 lease가 branch 삭제·rewind·동시 갱신까지 거부한다. push 거부나 원격 HEAD 변경은 실패로 기록하며 다른 ref를
-시도하지 않는다. `CAO-Review-ID`와 원래 HEAD를 커밋 trailer에 기록해 재시도
-시 이미 조치한 리뷰를 판별한다. `CAO-Apply-Run` trailer가 가리키는 완료된 CAO
-결과의 repository·PR·review ID·원래 HEAD·apply key·commit SHA까지 일치해야
-이미 적용된 것으로 인정한다. journal이 없어 확인할 수 없으면 자동 적용을
-중단하고 운영자 조정을 요구한다. 이 commit이 PR을 갱신하더라도 이번 상위
-실행에서 자동으로 다시 review하지 않는다.
+The read-only sandbox does not block all reads of the service user's home.
+The instruction to read only the carrier file once is profile policy. As with the
+existing reviewers, the service account must be a trusted operational account.
+This is not complete filesystem isolation of credentials. The deterministic writer
+owns modification permissions; neither the model nor target code executes or
+modifies the source checkout.
 
-## 중복·재시도·실패 정책
+Validation commands run in isolation without write tokens. File edits are confined
+to the allowed PR checkout. Diffs touching paths outside it, `.git`, credential
+files, or the workflow manager repository fail validation. Test commands execute
+untrusted target code and are permitted only in a restricted environment without
+network access or secrets. Without suitable isolation, test execution and push stop.
 
-중복 키는 `repository + PR 번호 + 원래 HEAD + review ID + apply workflow 버전`이다.
-`patch` 재실행은 동일 입력으로 후보를 다시 만들 수 있으나 기존 후보를
-무조건 덮어쓰지 않는다. `push` 재실행은 원격 commit trailer와 CAO 결과를
-조회해 이미 적용된 경우 `skipped`로 마친다. 적용 도중 실패한 경우 새 후보
-작업 디렉터리를 사용하고, 부분 변경을 현재 PR 브랜치에 게시하지 않는다.
-GitHub에는 marker와 push를 원자적으로 함께 기록할 API가 없으므로 직렬화와
-게시 직전 HEAD 재검사를 모두 사용한다.
+Only the deterministic publication step handles push. It checks that the PR head
+repository matches the base repository and that the branch is allowed by policy.
+After confirming that the remote ref still points to the original HEAD, it commits
+only the verified diff. The new commit must have the original HEAD as its only
+parent. Push uses an atomic expected-SHA lease on that ref:
+`--force-with-lease=REF:ORIGINAL_SHA`. The parent check forbids history rewriting;
+the lease rejects branch deletion, rewinds, and concurrent updates. Push rejection
+or a changed remote HEAD is recorded as failure without trying another ref.
 
-다음 조건은 자동 조치 실패다: review run 미완료, 찾을 수 없는/여러 개의
-소유 review, 원래 HEAD와 다른 review `commit_id`, 변경 줄이 아닌 댓글,
-PR 상태·HEAD 변경, 포크 또는 비허용 브랜치에 대한 push 요청, 검증 실패,
-모델 출력 형식 오류, 권한 분리 실패. 이 경우 review 댓글을 수정하거나
-다른 리뷰를 임의로 선택하지 않는다.
+Commit trailers record `CAO-Review-ID` and the original HEAD for retry detection.
+The completed CAO result referenced by `CAO-Apply-Run` must also match repository,
+PR, review ID, original HEAD, apply key, and commit SHA before an application is
+recognized as complete. Missing journal evidence stops automatic application and
+requires operator reconciliation. A pushed commit does not trigger another review
+within the same coordinator run.
 
-## 구현 파일과 검증 기준
+## Deduplication, Retry, and Failure Policy
 
-| 파일 | 구현 |
+The deduplication key includes repository, PR number, original HEAD, review ID,
+and apply workflow version. Patch retries may create another candidate for the
+same input but never overwrite an existing candidate unconditionally. Push retries
+inspect remote commit trailers and CAO results and return `skipped` when application
+is already verified. Failed applications use a fresh candidate directory and never
+publish partial changes to the current PR branch. GitHub provides no API to write
+a marker and push atomically, so serialization and a final HEAD check are both used.
+
+Automatic remediation fails on an incomplete review run, missing or ambiguous
+owned review, review `commit_id` differing from the original HEAD, comments outside
+changed lines, changed PR state or HEAD, push requests for forks or disallowed
+branches, failed validation, invalid model output, or failed permission separation.
+These failures do not modify review comments or select an arbitrary alternative review.
+
+## Implementation Files and Validation Criteria
+
+| File | Implementation |
 | --- | --- |
-| `workflows/github-pr-review/workflow.py` | v6의 typed review ID, HEAD/base snapshot, base marker |
-| `workflows/github-pr-apply/workflow.py` | 리뷰 귀속·changed-line 검사, exact replacement, 후보 패치, 격리 테스트, 선택적 push |
-| `agents/pr-review-applier.md` | 별도 read-only 치환 제안 profile |
-| `scripts/review_apply.py`, `scripts/run-review-apply.sh` | PR 직렬화, durable run ID, 두 단계 실행, 재개·취소 |
-| `.github/workflows/pr-review-apply.yml` | 기본 브랜치의 수동 실행, pre-provisioned trusted checkout의 SHA 검증 |
+| `workflows/github-pr-review/workflow.py` | v6 typed review ID, HEAD/base snapshot, base marker |
+| `workflows/github-pr-apply/workflow.py` | Review ownership and changed-line validation, exact replacement, candidate patch, isolated tests, optional push |
+| `agents/pr-review-applier.md` | Separate read-only edit proposal profile |
+| `scripts/manage.py`, `scripts/review_apply.py`, `scripts/run-review-apply.sh` | Shared `run.sh --apply` entry point, PR serialization, durable run IDs, two-stage execution, resume and cancellation |
+| `.github/workflows/pr-review-apply.yml` | Manual execution from the default branch and SHA verification of a pre-provisioned trusted checkout |
 
-모델 context는 finding 파일과 운영자가 지정한 `context_paths`/`new_files`로
-제한한다. 삭제·binary·symlink 수정은 허용하지 않는다. 컨텍스트 40개 파일,
-파일당 40KB, 전체 120KB, inline finding 100개, 변경 파일 300개, patch 2MB의
-상한을 넘으면 실패한다. 테스트 이미지는 사전 준비된 digest 또는 불변 local
-image ID로 고정하고 pull하지 않는다. 부분 조치는 후보로만 보존하고 push하지 않는다.
+Model context is limited to finding files and operator-configured `context_paths`
+and `new_files`. Deletions and binary or symlink edits are unsupported. Execution
+fails above 40 context files, 40KB per file, 120KB total context, 100 inline findings,
+300 changed files, or a 2MB patch. Test images are pinned to a preloaded digest or
+immutable local image ID and are never pulled. Partial application is retained
+only as a candidate and is never pushed.
 
-`make validate`와 `make test`, 격리된 `CAO_HOME_DIR` 설치/재설치/삭제,
-review 완료→apply 시작, review 실패→apply 미시작, 중복 review, HEAD 변경,
-포크 push 거부, 댓글 위조, 취소·재시도 테스트가 수용 기준이다. 실제 GitHub
-게시·push는 별도 테스트 저장소에서 검증해야 한다. 현재 증거는 단위 테스트,
-로컬 Git으로 확인한 후보 patch, 실제 Docker의 네트워크·인증 정보·쓰기 격리,
-격리 CAO 홈에서의 설치/재설치/삭제 검증이다. 실제 모델 출력의 수정 품질과
-GitHub 쓰기는 이 로컬 증거에 포함하지 않는다.
+Acceptance criteria include `make validate`, `make test`, installation/reinstallation/
+uninstallation in an isolated `CAO_HOME_DIR`, review completion followed by apply,
+review failure preventing apply, duplicate reviews, HEAD changes, fork push rejection,
+forged comments, cancellation, and retry tests. Actual GitHub publication and push
+must be qualified separately in a test repository. Current evidence covers unit
+tests, candidate patches verified with local Git, real Docker network/credential/
+write isolation, and isolated CAO installation lifecycle checks. It does not establish
+actual model edit quality or live GitHub writes.
 
-GitHub `workflow_run` 또는 권한 있는 Action에서 PR 코드를 실행하면 비밀 정보가
-노출될 수 있으므로 해당 트리거를 첫 구현에 사용하지 않는다.
-[GitHub 보안 지침](https://docs.github.com/en/actions/reference/security/secure-use).
+Executing PR code through GitHub `workflow_run` or a privileged Action can expose
+secrets, so that trigger is excluded from the initial implementation.
+See [GitHub security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
