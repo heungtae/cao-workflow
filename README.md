@@ -169,3 +169,5 @@ Do not store credentials or personal CAO state in this repository.
 - [Operations](docs/OPERATIONS.md): Operational setup, resume, and rollback
 - [PR Review](docs/GITHUB-PR-REVIEW.md): Review inputs and publication policy
 - [Review → Apply Design](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): Combined execution and validation contracts
+- [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Proposed independent workflow for MCP-only log analysis and GitHub Issue creation
+- [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Proposed independent workflow for Issue-driven fixes, isolated validation, and branch push
