@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "repositories": {
+    "owner/repo": {
+      "review_authors": ["your-review-bot"],
+      "editable_paths": ["src/**", "tests/**"],
+      "context_paths": ["tests/test_consumer.py"],
+      "new_files": [],
+      "test_image": "your-prepared-test-image@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "test_commands": [["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]],
+      "push_branches": [],
+      "git_author_name": "CAO Review Bot",
+      "git_author_email": "your-configured-bot@example.invalid"
+    }
+  }
+}

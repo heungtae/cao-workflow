@@ -29,3 +29,70 @@ Recheck `cao --version`, `cao workflow --help`, `cao profile --help`, profile va
 `doctor` diagnoses missing commands, invalid GitHub authentication, the `$CODEX_HOME/cao_pr_review_readonly.config.toml` file, CAO config, and deployed resources. If `cao workflow validate` cannot reach the server, start `cao-server` and match `CAO_API_PORT`. If Codex reports a folder trust problem, check that the fixed `workspace_root` has mode `0700` and its exact path is trusted in the named Codex profile; never trust individual PR checkout directories. CAO may mistake a Codex bootstrap failure for an idle shell; the workflow's step carrier is a fixed shell no-op token, and missing JSON fails before publication. CAO can prepend curated memory ahead of that carrier, so keep memory injection disabled or verify that this workflow receives an empty memory block. If a large PR exceeds bounds, narrow the PR or revise reviewed limits with tests and a workflow version bump. A stale HEAD during review blocks publish; rerun after the new commit appears.
 
 The incident-specific `supersede_v3_comment` publisher helper corrects an empty v3 comment only after it verifies the old and replacement comments have matching repository, PR, HEAD, workflow markers, and author. It does not run during normal reviews.
+
+## Review → apply setup and recovery
+
+Install/update both manifest workflows and six profiles. Configure both named
+read-only Codex configs in the CAO server's `CODEX_HOME`; the apply config also
+uses `shell_environment_policy.inherit=none`. The coordinator rejects missing,
+modified, or outdated deployments before starting a review. Standalone apply is
+available through `scripts/run.sh github-pr-apply` with explicit PR, HEAD, review
+ID, and policy; it authenticates the selected review again.
+
+Copy `config/apply-policy.example.json` into an operator-controlled directory
+outside the model workspace and set mode `0600`. Set the actual review bot login,
+editable file patterns, optional related context/new files, and at least one test
+command expressed as an argv array. Test dependencies must already be available
+in a local digest-pinned image (or immutable image ID); there is no image pull or
+network dependency installation during apply. Docker must run on the CAO host;
+run CAO as a non-root user with the intended Docker access. The coordinator checks
+that the configured image exists before spending a review run.
+
+For `push`, fill explicit `push_branches` and Git author fields. An empty allowlist
+denies every push. Forks, PR base/default branches, protected branches, stale
+HEAD/base, partial outcomes, and failed tests cannot be pushed. The new commit must
+have exactly the reviewed HEAD as its single parent; an explicit expected-SHA
+`--force-with-lease` atomically rejects branch deletion, rewinds and concurrent
+updates. This parent check forbids history rewriting. Hooks are disabled and
+global/system Git configuration is excluded. A successful push returns its verified
+commit SHA and includes review ID, original HEAD, apply key and CAO run trailers.
+Retries authenticate those trailers against the retained completed CAO result;
+missing/expired journal data requires manual reconciliation. No approval or merge
+is performed.
+
+The coordinator prints its mode-0600 state path before submission. A lost CLI
+connection does not mean a child run died. Use `--resume STATE_PATH` (with the same
+`--state-root` if customized) to query the retained explicit run IDs. Policy and
+workflow version changes reject an old state. Failed/cancelled terminal runs are
+not silently resubmitted: use a new chain after correcting the cause. This resolves
+the unique prior review and starts a fresh candidate. Native CAO step resume is
+manual and is not the coordinator's retry mechanism.
+
+SIGINT/SIGTERM cancellation is forwarded to the active CAO run and its resulting
+state is recorded. Test containers carry the apply run ID; cancellation also
+removes containers with that exact workflow/run label if the worker was killed
+before cleanup. Same-host PR locks serialize chains and applications; direct
+standalone reviews do not acquire the chain lock, so use one operational trigger
+per PR. Failed candidate `result.json` records its failing stage and artifact path.
+CAO `completed` for apply means its script returned; inspect its `result` field.
+`partial` is not full success and the coordinator exits 1 for it.
+
+The manual Action requires a trusted pre-provisioned checkout at
+`CAO_WORKFLOW_PROJECT_ROOT` and an absolute policy at `CAO_APPLY_POLICY_PATH`
+(repository Actions variables). The local checkout HEAD must equal the dispatched
+manager commit SHA, and its runtime resources must be current. The Action never
+checks out the target PR as workflow code. Use a trusted non-root self-hosted runner
+labelled `linux` and `cao`, and run the coordinator and CAO with the same filesystem
+and policy access. Candidate artifacts and chain state stay on that host; after
+inspection, retain or remove only the intended owner-controlled artifact folders.
+
+The optional real isolation gate is:
+
+```bash
+CAO_TEST_IMAGE=sha256:YOUR_LOCAL_IMAGE_ID python3 -m unittest discover -s tests -p test_apply_isolation.py -v
+```
+
+It requires a preinstalled Python 3 image and verifies no external network,
+credential environment, `.git`/`.env` mount, or mutation of the original candidate.
+Local unit/installation/isolation evidence does not establish real provider output
+quality or live GitHub publication; qualify those separately against a test PR.

@@ -1,4 +1,4 @@
-"""CAO 2.5 script-tier GitHub PR review workflow. Version v5."""
+"""CAO 2.5 script-tier GitHub PR review workflow. Version v6."""
 from __future__ import annotations
 
 import json
@@ -25,9 +25,11 @@ INPUTS = {
     "base_branch": {"type": "string", "required": False},
     "workspace_root": {"type": "string", "required": False, "default": "/tmp/cao-pr-review"},
     "model": {"type": "string", "required": False},
+    "expected_head_sha": {"type": "string", "required": False},
+    "expected_base_sha": {"type": "string", "required": False},
 }
 
-VERSION = "v5"
+VERSION = "v6"
 WORKFLOW = "github-pr-review"
 SEVERITIES = ("critical", "major", "minor", "info")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -403,12 +405,14 @@ def render_inline_comments(review: dict, allowed_files: dict[str, set[int]]) -> 
     return comments
 
 
-def publish(repository: str, number: int, sha: str, body: str, comments: list[dict]) -> str:
+def publish(repository: str, number: int, sha: str, body: str, comments: list[dict]) -> dict:
     payload = {"commit_id": sha, "body": body, "event": "COMMENT", "comments": comments}
     endpoint = f"repos/{repository}/pulls/{number}/reviews"
     result = json.loads(run_command(["gh", "api", "--method", "POST", endpoint, "--input", "-"],
                                     input_text=json.dumps(payload, ensure_ascii=False)))
-    return str(result.get("html_url", "published"))
+    if type(result.get("id")) is not int or result["id"] <= 0 or not isinstance(result.get("html_url"), str):
+        raise RuntimeError("GitHub published review without a valid typed ID/URL; reconcile before retry")
+    return {"review_id": result["id"], "review_url": result["html_url"]}
 
 
 def supersede_v3_comment(repository: str, number: int, old_id: int, replacement_id: int) -> str:
@@ -449,12 +453,17 @@ def publication_gate(review: dict, body: str, comments: list[dict], number: int,
 def process_pr(repository: str, pr: dict, inputs: dict) -> dict:
     number = pr["number"]
     sha = pr["head"]["sha"]
-    identity = marker(repository, number, sha)
+    if inputs.get("expected_head_sha") and inputs["expected_head_sha"] != sha:
+        raise RuntimeError("PR HEAD differs from the orchestration snapshot")
+    base_sha = pr['base']['sha']
+    if inputs.get('expected_base_sha') and inputs['expected_base_sha'] != base_sha:
+        raise RuntimeError('PR base differs from the orchestration snapshot')
+    identity = marker(repository, number, sha) + f'\n<!-- cao-review-base {base_sha} -->'
     start = datetime.now(timezone.utc).isoformat()
     comments = pages(repository, f"issues/{number}/comments", limit=300)
     reviews = pages(repository, f"pulls/{number}/reviews", limit=300)
     if not inputs.get("force_review") and (has_marker(comments, identity) or has_marker(reviews, identity)):
-        return {"pr": number, "head_sha": sha, "result": "skipped", "reason": "already reviewed", "start": start, "end": datetime.now(timezone.utc).isoformat()}
+        return {"pr": number, "head_sha": sha, "base_sha": base_sha, "result": "skipped", "reason": "already reviewed", "start": start, "end": datetime.now(timezone.utc).isoformat()}
     work = checkout(repository, number, sha, inputs.get("workspace_root", "/tmp/cao-pr-review"))
     try:
         files, metadata = collect_context(repository, pr, work / "source")
@@ -472,6 +481,7 @@ def process_pr(repository: str, pr: dict, inputs: dict) -> dict:
         inline_comments = render_inline_comments(merged, allowed)
         publication_gate(merged, body, inline_comments, number, work, inputs.get("model"))
         mode = inputs.get("publish_mode", "review") if inputs.get("publish", True) else "dry-run"
+        published = {"review_id": None, "review_url": None}
         if mode == "dry-run":
             destination = "dry-run"
             print(body)
@@ -479,15 +489,16 @@ def process_pr(repository: str, pr: dict, inputs: dict) -> dict:
         else:
             # Re-read remote state after long-running reviews to reduce duplicate posts.
             latest = api(repository, f"pulls/{number}")
-            if latest["head"]["sha"] != sha:
-                raise RuntimeError("PR HEAD changed during review; refusing stale publish")
+            if latest["head"]["sha"] != sha or latest['base']['sha'] != base_sha or latest['state'] != 'open':
+                raise RuntimeError("PR HEAD/base/state changed during review; refusing stale publish")
             fresh_comments = pages(repository, f"issues/{number}/comments", limit=300)
             fresh_reviews = pages(repository, f"pulls/{number}/reviews", limit=300)
             if not inputs.get("force_review") and (has_marker(fresh_comments, identity) or has_marker(fresh_reviews, identity)):
                 destination = "skipped: another run published"
             else:
-                destination = publish(repository, number, sha, body, inline_comments)
-        return {"pr": number, "head_sha": sha, "result": "completed", "findings": len(merged["findings"]), "publish_result": destination, "start": start, "end": datetime.now(timezone.utc).isoformat()}
+                published = publish(repository, number, sha, body, inline_comments)
+                destination = published["review_url"]
+        return {"pr": number, "head_sha": sha, "base_sha": base_sha, "result": "completed", "findings": len(merged["findings"]), "publish_result": destination, **published, "start": start, "end": datetime.now(timezone.utc).isoformat()}
     finally:
         shutil.rmtree(work)
 

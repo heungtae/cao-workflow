@@ -1,6 +1,6 @@
 # Adding a workflow
 
-1. Create `workflows/<name>/workflow.py` as a CAO script-tier file with static literal `INPUTS`, `get_inputs()`, stable step IDs, and `emit_output()`.
+1. Create `workflows/<name>/workflow.py` as a CAO script-tier file with static literal `INPUTS`, `WORKFLOW` and `VERSION` matching the manifest, `get_inputs()`, stable step IDs, and `emit_output()`.
 2. Add only required `agents/<name>.md` profiles. Use installed CAO schema keys; write responsibility, forbidden actions, untrusted input policy, and an exact output contract. Avoid a fixed model unless operationally required.
 3. Add one workflow entry and agent entries to `manifest.json`. The manifest is the only management inventory.
 4. Add configuration examples and targeted fixtures/tests for filtering, deduplication, aggregation, and safe removal where applicable.

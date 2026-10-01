@@ -1,0 +1,9 @@
+{
+  "repository": "owner/repo",
+  "pr_number": 312,
+  "head_sha": "1111111111111111111111111111111111111111",
+  "review_id": 123456,
+  "policy_path": "/absolute/operator/config/apply-policy.json",
+  "apply_mode": "patch",
+  "workspace_root": "/tmp/cao-pr-apply"
+}

@@ -14,24 +14,52 @@ spec.loader.exec_module(manage)
 class ManagementTests(unittest.TestCase):
     def test_manifest_and_config(self):
         manifest = manage.load_manifest()
-        self.assertEqual(5, len(manifest["agents"]))
+        self.assertEqual(6, len(manifest["agents"]))
         defaults = json.loads((ROOT / "config/defaults.json").read_text())
         self.assertEqual("review", defaults["publish_mode"])
         manage.validate_defaults(defaults)
         broken = dict(defaults, workspace_root="relative/path")
         with self.assertRaises(manage.ManagementError):
             manage.validate_defaults(broken)
+        from test_apply import apply
+        from test_workflow import workflow
+        self.assertEqual(workflow.VERSION, manifest['workflows'][0]['version'])
+        self.assertEqual(workflow.VERSION, apply.REVIEW_VERSION)
+        self.assertEqual(workflow.marker('owner/repo', 1, 'a' * 40), apply.review_marker('owner/repo', 1, 'a' * 40))
+
+    def test_chain_deployment_rejects_modified_applier_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            chosen = manage.selected(manage.load_manifest(), 'github-pr-apply')
+            state = manage.load_state(home)
+            for kind in ('workflows', 'agents'):
+                for entry in chosen[kind]:
+                    dst = manage.target(home, kind, entry)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    dst.write_bytes((ROOT / entry['source']).read_bytes())
+                    state[kind][entry['name']] = {'sha256': manage.digest(dst)}
+                    if kind == 'agents':
+                        context = manage.profile_context(home, entry['name'])
+                        context.parent.mkdir(parents=True, exist_ok=True)
+                        context.write_bytes(dst.read_bytes())
+            manage.atomic_json(manage.state_path(home), state)
+            with patch.object(manage, 'cao_home', return_value=home):
+                self.assertTrue(manage.deployed_workflow('github-pr-apply').is_file())
+                profile = manage.target(home, 'agents', chosen['agents'][0])
+                profile.write_text('unrestricted modified profile')
+                with self.assertRaises(manage.ManagementError):
+                    manage.deployed_workflow('github-pr-apply')
 
     def test_actual_profile_and_workflow_validation(self):
         # Exercises CAO's installed profile schema and script linter.
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"CAO_HOME_DIR": directory}):
-            self.assertEqual(1, len(manage.validate()["workflows"]))
+            self.assertEqual(2, len(manage.validate()["workflows"]))
 
     def test_install_skips_identical_owned_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             manifest = manage.load_manifest()
-            chosen = manage.selected(manifest, "github-pr-review")
+            chosen = manifest
             state = manage.load_state(home)
             for kind in ("agents", "workflows"):
                 for entry in chosen[kind]:

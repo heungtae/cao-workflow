@@ -131,6 +131,38 @@ def codex_review_profile_ok() -> bool:
         return False
 
 
+def codex_apply_profile_path() -> Path:
+    return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "cao_pr_apply_readonly.config.toml"
+
+
+def codex_apply_profile_ok() -> bool:
+    try:
+        profile = tomllib.loads(codex_apply_profile_path().read_text())
+        return (profile.get("sandbox_mode") == "read-only" and profile.get("approval_policy") == "never"
+                and profile.get("shell_environment_policy", {}).get("inherit") == "none")
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+
+
+def deployed_workflow(name: str) -> Path:
+    """Resolve only the exact owned, current deployment and its profile contexts."""
+    chosen = selected(load_manifest(), name)
+    home, resources = cao_home(), chosen
+    state = load_state(home)
+    for kind in ("workflows", "agents"):
+        for entry in resources[kind]:
+            dst, record = target(home, kind, entry), state[kind].get(entry['name'])
+            expected = digest(ROOT / entry['source'])
+            if (not record or dst.is_symlink() or not dst.is_file()
+                    or digest(dst) != record['sha256'] or digest(dst) != expected):
+                raise ManagementError(f"Missing/modified/outdated deployment: {entry['name']}; run update first", 3)
+            if kind == 'agents':
+                context = profile_context(home, entry['name'])
+                if context.is_symlink() or not context.is_file() or digest(context) != expected:
+                    raise ManagementError(f"Missing/modified profile context: {entry['name']}", 3)
+    return target(home, 'workflows', chosen['workflows'][0])
+
+
 def selected(manifest: dict, name: str | None) -> dict:
     if name is None:
         return manifest
@@ -149,9 +181,10 @@ def validate() -> dict:
     repositories = json.loads((ROOT / "config/repositories.example.json").read_text()).get("repositories")
     if not isinstance(repositories, list) or any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repositories):
         raise ManagementError("Invalid repositories.example.json", 2)
-    example_input = json.loads((ROOT / "workflows/github-pr-review/config.example.json").read_text())
-    if not isinstance(example_input, dict) or not isinstance(example_input.get("repository"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", example_input["repository"]):
-        raise ManagementError("Invalid github-pr-review config example", 2)
+    for entry in manifest['workflows']:
+        example_input = json.loads((ROOT / entry['source']).with_name('config.example.json').read_text())
+        if not isinstance(example_input, dict) or not isinstance(example_input.get("repository"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", example_input["repository"]):
+            raise ManagementError(f"Invalid {entry['name']} config example", 2)
     for script in (ROOT / "scripts").rglob("*.sh"):
         result = command("bash", "-n", str(script), check=False)
         if result.returncode:
@@ -167,7 +200,11 @@ def validate() -> dict:
     for entry in manifest["workflows"]:
         source = ROOT / entry["source"]
         import ast
-        ast.parse(source.read_text(), filename=str(source))
+        tree = ast.parse(source.read_text(), filename=str(source))
+        literals = {target.id: node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                    and isinstance(node.value, ast.Constant) for target in node.targets if isinstance(target, ast.Name)}
+        if literals.get('WORKFLOW') != entry['name'] or literals.get('VERSION') != entry['version']:
+            raise ManagementError(f'Workflow name/version differs from manifest: {source}', 2)
         # CAO is commonly installed in its own uv tool venv, not system python.
         cao_python = Path(shutil.which("cao")).resolve().parent / "python"
         if not cao_python.is_file():
@@ -179,6 +216,18 @@ def validate() -> dict:
         result = command(str(cao_python), "-c", lint_code, str(source), check=False)
         if result.returncode:
             raise ManagementError(f"Workflow invalid: {source}: {(result.stdout or result.stderr).strip()}", 2)
+    # CAO already supplies PyYAML. Parse manual Action YAML and syntax-check its
+    # explicit Bash steps without installing another tool or executing the steps.
+    action_code = ("import sys,yaml,subprocess; from pathlib import Path; "
+                   "data=yaml.safe_load(Path(sys.argv[1]).read_text()); "
+                   "assert isinstance(data,dict); "
+                   "steps=[s for j in data.get('jobs',{}).values() for s in j.get('steps',[])]; "
+                   "[subprocess.run(['bash','-n'],input=s['run'],text=True,capture_output=True,check=True) "
+                   "for s in steps if 'run' in s and s.get('shell')=='bash']")
+    for action in (ROOT / '.github/workflows').glob('*.yml'):
+        result = command(str(cao_python), '-c', action_code, str(action), check=False)
+        if result.returncode:
+            raise ManagementError(f"Action syntax invalid: {action}", 2)
     print("All validations passed.")
     return manifest
 
@@ -336,6 +385,9 @@ def doctor() -> None:
     codex_ok = codex_review_profile_ok()
     print("Codex review profile:", "OK" if codex_ok else f"MISSING: copy config/cao_pr_review_readonly.config.toml to {profile_file}")
     problems += not codex_ok
+    apply_ok = codex_apply_profile_ok()
+    print("Codex apply profile:", "OK" if apply_ok else f"MISSING: copy config/cao_pr_apply_readonly.config.toml to {codex_apply_profile_path()}")
+    problems += not apply_ok
     try:
         print("CAO config:", command("cao", "config", "path").stdout.strip())
         status()
@@ -367,7 +419,7 @@ def doctor() -> None:
 
 
 def run(argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="run.sh github-pr-review")
+    parser = argparse.ArgumentParser(prog="run.sh")
     parser.add_argument("workflow")
     parser.add_argument("--repository", required=True)
     parser.add_argument("--pr", type=int, dest="pr_number")
@@ -379,6 +431,11 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--base-branch")
     parser.add_argument("--workspace-root")
     parser.add_argument("--model")
+    parser.add_argument("--head-sha")
+    parser.add_argument("--review-id", type=int)
+    parser.add_argument("--policy", dest="policy_path")
+    parser.add_argument("--apply-mode", choices=("patch", "push"), default="patch")
+    parser.add_argument("--expected-findings", type=int)
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args(argv)
     prerequisites(runtime=True)
@@ -392,6 +449,23 @@ def run(argv: list[str]) -> None:
     defaults = json.loads((ROOT / "config/defaults.json").read_text())
     validate_defaults(defaults)
     selected(manifest, args.workflow)
+    if args.workflow == 'github-pr-apply':
+        if not args.pr_number or not args.review_id or not args.head_sha or not args.policy_path:
+            raise ManagementError("Apply requires --pr, --review-id, --head-sha and --policy", 3)
+        if args.review_id <= 0 or not re.fullmatch(r'[0-9a-f]{40}', args.head_sha):
+            raise ManagementError("Invalid review ID or HEAD SHA", 3)
+        if any((args.dry_run, args.no_publish, args.publish_mode, args.include_drafts, args.force_review, args.base_branch)):
+            raise ManagementError("Review-only flags cannot be used for apply", 3)
+        if not codex_apply_profile_ok():
+            raise ManagementError(f"Configure apply profile first: {codex_apply_profile_path()}", 3)
+        cmd = ['cao', 'workflow', 'run', str(deployed_workflow(args.workflow)), '--input', f'repository={args.repository}']
+        for key in ('pr_number', 'review_id', 'head_sha', 'policy_path', 'apply_mode', 'expected_findings', 'workspace_root', 'model'):
+            value = getattr(args, key)
+            if value is not None:
+                cmd += ['--input', f'{key}={value}']
+        if args.detach:
+            cmd.append('--detach')
+        raise SystemExit(subprocess.call(cmd))
     home = cao_home()
     state = load_state(home)
     if args.workflow not in state["workflows"]:
@@ -423,6 +497,14 @@ def run(argv: list[str]) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == 'run':
+        try:
+            run(sys.argv[2:])
+        except (ManagementError, OSError, ValueError, KeyError) as exc:
+            code = exc.code if isinstance(exc, ManagementError) else 2
+            print(f'ERROR: {exc}', file=sys.stderr)
+            raise SystemExit(code)
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=("install", "uninstall", "validate", "status", "list", "doctor", "run"))
     args, rest = parser.parse_known_args()

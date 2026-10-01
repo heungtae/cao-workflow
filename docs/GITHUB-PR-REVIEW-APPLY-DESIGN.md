@@ -1,13 +1,14 @@
 # GitHub PR review → apply 워크플로 설계
 
-상태: **Proposed**. 이 문서는 구현 계약이다. 현재 저장소에는 `github-pr-review`만
-구현되어 있으며, apply 워크플로와 연결 실행기는 아직 없다.
+상태: **Implemented — 로컬 검증**. `github-pr-review` v6, `github-pr-apply` v1,
+상위 실행기와 수동 GitHub Action을 구현했다. 실제 대상 PR에서 모델 실행과
+GitHub 게시·push를 함께 수행한 운영 검증은 아직 하지 않았다.
 
 ## 목표와 결정
 
 하나의 실행 요청으로 지정한 PR을 리뷰하고, 그 실행이 생성한 리뷰의 조치 사항을
 같은 HEAD에서 순서대로 적용한다. 리뷰와 적용은 각각 독립적인 CAO 워크플로로
-유지한다. 저장소가 소유하는 상위 실행기(`scripts/run-review-apply.sh` 예정)가
+유지한다. 저장소가 소유하는 상위 실행기(`scripts/run-review-apply.sh`)가
 `github-pr-review` 완료와 결과를 확인한 뒤 `github-pr-apply`를 시작한다.
 GitHub Action은 이 상위 실행기를 호출하는 진입점이다. 로컬 수동 실행도 같은
 실행기를 사용한다.
@@ -69,12 +70,13 @@ PR 브랜치에서 Action/워크플로 코드를 로드하지 않는다.
 | 상위 실행 요청 | `repository`, `pr_number`, `apply_mode`, 선택 `model` | `owner/name`, 열린 단일 PR, 허용된 모드 |
 | GitHub PR 스냅샷 | base 저장소, HEAD 저장소·브랜치·SHA, draft, 상태 | review 전후와 apply 게시 직전에 재조회 |
 | review 결과 | CAO run ID, `repository`, PR 번호, review workflow 버전, HEAD SHA, 결과, `review_id`, URL, finding 수 | `cao workflow result RUN_ID --json`의 완료 상태와 구조화된 `output` 검증 |
-| apply 입력 | `repository`, `pr_number`, 원래 `head_sha`, `review_id`, `apply_mode` | GitHub API에서 리뷰와 inline 댓글을 다시 조회; URL이나 모델 출력에서 ID를 추측하지 않음 |
+| apply 입력 | `repository`, `pr_number`, 원래 `head_sha`, `base_sha`, `review_id`, `apply_mode`, `policy_path` | GitHub API에서 리뷰와 inline 댓글을 다시 조회; URL이나 모델 출력에서 ID를 추측하지 않음 |
 | apply 결과 | CAO run ID, 원래 HEAD, review ID, 상태, 변경 파일, 검사 결과, 후보 패치 위치, 선택적 새 commit SHA | 결과가 빠지거나 모순되면 실패 처리 |
 
-현재 `github-pr-review`의 `publish()`는 URL 문자열만 반환하고 `process_pr()`는
-그 문자열을 `publish_result`로 출력한다. 구현 시 GitHub review POST 응답의
-정수 `id`와 URL을 구조화해 반환해야 한다. 결과가 `skipped`이면 이번에 새
+`github-pr-review` v6의 `publish()`는 GitHub POST 응답의 정수 `id`와 URL을
+`review_id`와 `review_url`로 반환한다. 기존 `publish_result` URL도 유지한다.
+HEAD뿐 아니라 base SHA도 출력하고 별도 base marker를 게시해, 같은 HEAD에서
+base가 달라져도 새 리뷰를 수행한다. 결과가 `skipped`이면 이번에 새
 review가 게시된 것으로 간주하지 않는다. 같은 repository·PR·HEAD·workflow
 버전의 소유 marker가 붙은 review를 조회해 작성자와 ID가 정확히 하나인지
 확인한 경우에만 재시도 경로에서 사용한다. `dry-run`, 게시 실패, finding 0개는
@@ -112,13 +114,23 @@ apply를 시작하지 않는다. 상위 실행 취소 시 활성 자식 run ID�
 
 apply는 PR의 원래 HEAD를 격리된 소유자 전용 작업 디렉터리에 checkout한다.
 기존 review의 read-only Codex profile을 변경하지 않고, 별도 적용 profile을
-설치한다. 이 profile에는 명시적 workspace-write sandbox와 승인 정책을
-설정한다. CAO의 `allowedTools`만으로 권한을 제한했다고 간주하지 않는다.
+설치한다. 구현 조사에서 CAO 모델 단계가 서비스와 같은 사용자 환경에서
+실행되는 것을 확인했으므로, 처음 제안한 workspace-write 대신 명시적
+read-only sandbox와 shell environment `inherit=none`을 사용한다. 모델은 파일별
+정확한 `old`/`new` 치환과 comment ID별 outcome을 반환하고, 결정적 워크플로가
+모든 치환을 검증한 뒤 적용한다. 모호한 치환, 없는 comment ID, 중복 outcome,
+지원 편집이 없는 addressed 상태는 실패다. CAO의 `allowedTools`만으로
+권한을 제한했다고 간주하지 않는다.
 모델 입력은 고정 형식 carrier와 소유자 전용 파일로 전달한다. PR 내용,
 AGENTS.md, 커밋 메시지, 리뷰 댓글, 모델 출력은 모두 데이터로 취급한다.
 
-모델 단계에는 GitHub 쓰기 토큰, Git credential helper, 게시 API 권한을
-제공하지 않는다. 모델은 GitHub에 댓글을 달거나 push/merge하지 않는다.
+모델 입력에는 checkout 경로·Git 설정·GitHub 토큰을 전달하지 않고 shell
+환경도 상속하지 않는다. 모델은 GitHub에 댓글을 달거나 push/merge하지 않는다.
+단, read-only sandbox는 서비스 사용자 홈의 파일 읽기를 모두 차단하는 설정이
+아니다. carrier 파일 한 번만 읽으라는 제한은 profile 정책이며 서비스 계정은
+기존 reviewer와 마찬가지로 신뢰된 운영 계정이어야 한다. 이를 자격 증명의
+완전한 파일 시스템 격리라고 주장하지 않는다. 실제 수정 권한은 결정적 writer가
+가지며 모델이나 대상 코드가 source checkout을 실행·수정하지 않는다.
 검증 명령도 쓰기 토큰이 없는 격리 환경에서 실행한다. 실제 코드 수정은
 허용된 PR checkout 안으로 제한하고, diff가 그 checkout 밖·`.git`·자격 증명
 파일·워크플로 관리 저장소를 건드리면 실패한다. 테스트 명령은 대상 저장소의
@@ -127,10 +139,15 @@ AGENTS.md, 커밋 메시지, 리뷰 댓글, 모델 출력은 모두 데이터로
 
 `push` 모드는 결정적 게시 단계만 수행한다. PR head 저장소가 base 저장소와
 같고 정책 허용 브랜치인지 검사한다. 원격 ref가 원래 HEAD인지 마지막으로
-확인한 후, 검증된 diff만 커밋하고 해당 head ref에 일반 push한다. force push는
-허용하지 않는다. push 거부나 원격 HEAD 변경은 실패로 기록하며 다른 ref를
+확인한 후, 검증된 diff만 커밋한다. 새 commit의 유일한 parent가 원래 HEAD인지
+검사하고, 해당 ref의 expected-SHA lease로 atomic하게 push한다. 구현은
+`--force-with-lease=REF:ORIGINAL_SHA`를 쓰지만, parent 검사가 이력 재작성을
+금지하고 lease가 branch 삭제·rewind·동시 갱신까지 거부한다. push 거부나 원격 HEAD 변경은 실패로 기록하며 다른 ref를
 시도하지 않는다. `CAO-Review-ID`와 원래 HEAD를 커밋 trailer에 기록해 재시도
-시 이미 조치한 리뷰를 판별한다. 이 commit이 PR을 갱신하더라도 이번 상위
+시 이미 조치한 리뷰를 판별한다. `CAO-Apply-Run` trailer가 가리키는 완료된 CAO
+결과의 repository·PR·review ID·원래 HEAD·apply key·commit SHA까지 일치해야
+이미 적용된 것으로 인정한다. journal이 없어 확인할 수 없으면 자동 적용을
+중단하고 운영자 조정을 요구한다. 이 commit이 PR을 갱신하더라도 이번 상위
 실행에서 자동으로 다시 review하지 않는다.
 
 ## 중복·재시도·실패 정책
@@ -149,22 +166,29 @@ PR 상태·HEAD 변경, 포크 또는 비허용 브랜치에 대한 push 요청,
 모델 출력 형식 오류, 권한 분리 실패. 이 경우 review 댓글을 수정하거나
 다른 리뷰를 임의로 선택하지 않는다.
 
-## 구현 순서와 검증 기준
+## 구현 파일과 검증 기준
 
-1. `github-pr-review`에 typed review ID 출력과 결과 검증 테스트를 추가한다.
-   리뷰 의미가 바뀌는 변경에는 manifest의 workflow 버전도 올린다.
-2. `github-pr-apply`와 별도 적용 profile을 manifest에 등록한다. isolated
-   checkout, 리뷰 귀속·HEAD·changed-line 검사, 후보 diff 수집을 구현한다.
-3. 상위 실행기에 순차 실행, 명시적 run ID, 재시도·취소 상태 처리를 구현한다.
-   첫 단계는 `apply_mode=patch`로 완료한다.
-4. 자격 증명 분리·테스트 격리·브랜치 정책이 검증된 뒤 선택적 `push` 모드와
-   수동 GitHub Action 진입점을 추가한다.
+| 파일 | 구현 |
+| --- | --- |
+| `workflows/github-pr-review/workflow.py` | v6의 typed review ID, HEAD/base snapshot, base marker |
+| `workflows/github-pr-apply/workflow.py` | 리뷰 귀속·changed-line 검사, exact replacement, 후보 패치, 격리 테스트, 선택적 push |
+| `agents/pr-review-applier.md` | 별도 read-only 치환 제안 profile |
+| `scripts/review_apply.py`, `scripts/run-review-apply.sh` | PR 직렬화, durable run ID, 두 단계 실행, 재개·취소 |
+| `.github/workflows/pr-review-apply.yml` | 기본 브랜치의 수동 실행, pre-provisioned trusted checkout의 SHA 검증 |
+
+모델 context는 finding 파일과 운영자가 지정한 `context_paths`/`new_files`로
+제한한다. 삭제·binary·symlink 수정은 허용하지 않는다. 컨텍스트 40개 파일,
+파일당 40KB, 전체 120KB, inline finding 100개, 변경 파일 300개, patch 2MB의
+상한을 넘으면 실패한다. 테스트 이미지는 사전 준비된 digest 또는 불변 local
+image ID로 고정하고 pull하지 않는다. 부분 조치는 후보로만 보존하고 push하지 않는다.
 
 `make validate`와 `make test`, 격리된 `CAO_HOME_DIR` 설치/재설치/삭제,
 review 완료→apply 시작, review 실패→apply 미시작, 중복 review, HEAD 변경,
 포크 push 거부, 댓글 위조, 취소·재시도 테스트가 수용 기준이다. 실제 GitHub
-게시·push는 별도 테스트 저장소에서 검증한다. README와 운영 문서는 각 단계의
-실제 동작이 생길 때 갱신한다.
+게시·push는 별도 테스트 저장소에서 검증해야 한다. 현재 증거는 단위 테스트,
+로컬 Git으로 확인한 후보 patch, 실제 Docker의 네트워크·인증 정보·쓰기 격리,
+격리 CAO 홈에서의 설치/재설치/삭제 검증이다. 실제 모델 출력의 수정 품질과
+GitHub 쓰기는 이 로컬 증거에 포함하지 않는다.
 
 GitHub `workflow_run` 또는 권한 있는 Action에서 PR 코드를 실행하면 비밀 정보가
 노출될 수 있으므로 해당 트리거를 첫 구현에 사용하지 않는다.

@@ -1,0 +1,51 @@
+name: PR review and apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Target repository (owner/name), present in the operator policy
+        required: true
+        type: string
+      pr_number:
+        description: Open PR number
+        required: true
+        type: string
+      apply_mode:
+        description: Candidate patch or policy-authorized push
+        required: true
+        default: patch
+        type: choice
+        options: [patch, push]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cao-review-apply-${{ inputs.repository }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  review-apply:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, cao]
+    timeout-minutes: 90
+    env:
+      PROJECT_ROOT: ${{ vars.CAO_WORKFLOW_PROJECT_ROOT }}
+      POLICY_PATH: ${{ vars.CAO_APPLY_POLICY_PATH }}
+      MANAGER_SHA: ${{ github.sha }}
+      TARGET_REPOSITORY: ${{ inputs.repository }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      APPLY_MODE: ${{ inputs.apply_mode }}
+    steps:
+      - name: Run the trusted manager checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PROJECT_ROOT"
+          test -n "$POLICY_PATH"
+          test "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" = "$MANAGER_SHA"
+          test -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"
+          exec "$PROJECT_ROOT/scripts/run-review-apply.sh" \
+            --repository "$TARGET_REPOSITORY" --pr "$PR_NUMBER" \
+            --policy "$POLICY_PATH" --apply-mode "$APPLY_MODE"

@@ -13,19 +13,21 @@
 | `base_branch` | absent | Match base branch |
 | `workspace_root` | `/tmp/cao-pr-review` | Owner-only Codex working directory and temporary checkout parent |
 | `model` | provider default | Codex step model override |
+| `expected_head_sha` | absent | Coordinator-pinned HEAD; mismatch stops before review |
+| `expected_base_sha` | absent | Coordinator-pinned base; mismatch stops before review |
 
 Wrapper example: `./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --dry-run`. Direct CAO example: `cao workflow run github-pr-review --input repository=owner/repo --input pr_number=312 --input publish_mode=dry-run`.
 
 ## Algorithm
 
 1. Query GitHub's open PRs, filter drafts and optional base branch, or select the explicit open PR.
-2. Read issue comments and reviews for a machine-readable marker containing repository, PR, HEAD SHA, workflow name, and version. Skip the same identity unless forced.
+2. Read issue comments and reviews for a machine-readable marker containing repository, PR, HEAD SHA, workflow name, and version, followed by a base SHA marker. Skip the same HEAD/base identity unless forced. v6 adds the base snapshot so a changed base at the same HEAD is reviewed again.
 3. Require an owner-only (mode `0700`) workspace root, then clone the repository into a unique temporary child directory, fetch the PR ref, verify it still resolves to the discovered HEAD SHA, and check it out detached. The workflow never commits or pushes.
 4. Collect title, description, author, base/head SHA, commit messages, changed file patches, existing comments/review comments, checks, and root README/AGENTS/CONTRIBUTING. Treat all as untrusted data. Common credential patterns are redacted before model prompts.
 5. Omit known binary, lock, minified, generated, vendor, and distribution files. An unrecognized file with no patch fails closed. Split large text patches at line boundaries into approximately 24KB segments with new-line anchors, then group them into 120KB context chunks. A single overlong line fails closed. Three Codex reviewers run concurrently for each chunk through CAO `step()`. Each step receives only a fixed-format shell no-op token; the bounded review input lives in a mode `0600` file under the owner-only workspace root. Invalid reviewer or aggregator JSON is retried once with a distinct step ID. Remaining format errors block publication.
 6. Validate each JSON finding's severity, fields, confidence, file, and changed line. Supply short changed-line patch excerpts with reviewer findings to the aggregator. The aggregator merges supported findings; if it removes every reviewer finding, the run fails instead of posting an empty review. The workflow removes invalid or duplicate locations and deterministically renders a summary body plus one inline comment per finding. The publisher profile checks presentation fidelity before the workflow's GitHub API call.
 7. Send one `COMMENT` PR review with `commit_id`, the summary in `body`, and findings in `comments[]` anchored by `path`, changed `line`, and `side=RIGHT`. It never APPROVEs, requests changes, or merges.
-8. Before writing, recheck HEAD SHA and remote marker. New HEADs get new comments to preserve review history; same HEADs are skipped. Always remove the temporary checkout.
+8. Before writing, recheck HEAD/base SHA, open state and remote marker. New HEAD/base identities get new comments to preserve review history. Always remove the temporary checkout. New publication returns typed `review_id`, `review_url`, `base_sha`, and the existing `publish_result`; dry-run and skipped paths do not claim a new review ID.
 
 The hidden HTML marker is encoded JSON, so it adds no visible noise. Identity includes workflow version. A reviewer/profile change that affects findings requires a version bump. Multiple machines share markers through GitHub rather than local ephemeral state. GitHub does not offer an atomic compare-and-create comment operation; two exactly simultaneous runs can still race after the second marker check. Serialize triggers per PR when strict exactly-once posting is required.
 

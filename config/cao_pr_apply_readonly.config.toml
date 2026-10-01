@@ -1,0 +1,10 @@
+# Install in the CAO server's CODEX_HOME as cao_pr_apply_readonly.config.toml.
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[shell_environment_policy]
+inherit = "none"
+
+# Trust only this fixed carrier workspace, never a target PR checkout.
+[projects."/tmp/cao-pr-apply"]
+trust_level = "trusted"

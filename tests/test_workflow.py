@@ -42,6 +42,7 @@ class WorkflowTests(unittest.TestCase):
     def test_same_sha_skips_before_checkout(self):
         pr = self.fixture("pr/simple.json")
         identity = workflow.marker("owner/repo", 312, pr["head"]["sha"])
+        identity += f"\n<!-- cao-review-base {pr['base']['sha']} -->"
         with patch.object(workflow, "pages", side_effect=[[{"body": identity}], []]), patch.object(workflow, "checkout") as checkout:
             result = workflow.process_pr("owner/repo", pr, {"publish_mode": "review"})
         self.assertEqual("skipped", result["result"])
@@ -153,13 +154,29 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(workflow, "codex_json", return_value={"publish": False, "reason": "mismatch"}):
             with self.assertRaises(RuntimeError):
                 workflow.publication_gate(merged, body, inline, 312, Path("/tmp"))
-        with patch.object(workflow, "run_command", return_value='{"html_url":"https://github.com/x"}') as runner:
-            workflow.publish("owner/repo", 312, "81ac79e", body, inline)
+        with patch.object(workflow, "run_command", return_value='{"id":123,"html_url":"https://github.com/x"}') as runner:
+            published = workflow.publish("owner/repo", 312, "81ac79e", body, inline)
+            self.assertEqual(123, published['review_id'])
             payload = json.loads(runner.call_args.kwargs["input_text"])
             self.assertEqual("COMMENT", payload["event"])
             self.assertEqual("81ac79e", payload["commit_id"])
             self.assertEqual(inline, payload["comments"])
             self.assertIn("repos/owner/repo/pulls/312/reviews", runner.call_args.args[0])
+
+    def test_review_snapshot_mismatch_blocks_before_discovery_comments(self):
+        pr = self.fixture('pr/simple.json')
+        with patch.object(workflow, 'pages') as pages:
+            with self.assertRaisesRegex(RuntimeError, 'HEAD differs'):
+                workflow.process_pr('owner/repo', pr, {'expected_head_sha': 'other'})
+            with self.assertRaisesRegex(RuntimeError, 'base differs'):
+                workflow.process_pr('owner/repo', pr, {'expected_base_sha': 'other'})
+            pages.assert_not_called()
+
+    def test_publication_requires_typed_id(self):
+        for bad in (True, '123', None, 0):
+            with self.subTest(bad=bad), patch.object(workflow, 'run_command', return_value=json.dumps({'id': bad, 'html_url': 'url'})):
+                with self.assertRaisesRegex(RuntimeError, 'typed ID'):
+                    workflow.publish('owner/repo', 1, 'a' * 40, 'body', [])
 
     def test_aggregation_supplies_changed_line_evidence(self):
         finding = self.fixture("reviews/code-review.json")["findings"][0]

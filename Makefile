@@ -1,4 +1,4 @@
-.PHONY: doctor validate test install update status list uninstall review
+.PHONY: doctor validate test install update status list uninstall review review-apply
 doctor:
 	./scripts/doctor.sh
 validate:
@@ -17,3 +17,5 @@ uninstall:
 	./scripts/uninstall.sh --yes
 review:
 	./scripts/run.sh github-pr-review --repository "$(REPO)" $(if $(PR),--pr "$(PR)",)
+review-apply:
+	./scripts/run-review-apply.sh --repository "$(REPO)" --pr "$(PR)" --policy "$(POLICY)" --apply-mode "$(or $(APPLY_MODE),patch)"
