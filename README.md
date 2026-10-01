@@ -161,7 +161,7 @@ Do not store credentials or personal CAO state in this repository.
 | `workflows/` | CAO script workflow sources |
 | `config/` | Codex configuration and example inputs and policies |
 | `scripts/` | Installation, validation, execution, status checks, and removal |
-| `tests/` | Management, review, and apply tests and fixtures |
+| `tests/` | Management, PR review/apply, incident workflow, and MCP client tests and fixtures |
 | `docs/` | Architecture, development, operations, and design documentation |
 
 - [Architecture](docs/ARCHITECTURE.md): CAO contracts and execution structure
@@ -169,8 +169,8 @@ Do not store credentials or personal CAO state in this repository.
 - [Operations](docs/OPERATIONS.md): Operational setup, resume, and rollback
 - [PR Review](docs/GITHUB-PR-REVIEW.md): Review inputs and publication policy
 - [Review → Apply Design](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): Combined execution and validation contracts
-- [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Proposed independent workflow for MCP-only log analysis and GitHub Issue creation
-- [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Proposed independent workflow for Issue-driven fixes, isolated validation, and branch push
+- [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Independent workflow for MCP-only log analysis and GitHub Issue creation
+- [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Independent workflow for Issue-driven fixes, isolated validation, and branch push
 - [External MCP Log Server Specification](docs/MCP-LOG-SERVER-SPEC.md): Provider-facing contract; server implementation, deployment, and operation are supplied externally
 
 ## Independent incident workflows
@@ -184,3 +184,73 @@ comment. MCP server implementation and deployment belong to the external provide
 See [setup, policy, execution and recovery](docs/INCIDENT-WORKFLOWS.md) and the
 [operator policy example](config/incident-policy.example.json). Install the two
 workflows separately using the ownership-checked manager. Neither invokes the other.
+
+### Exception detection and additional log collection
+
+The monitor retrieves exception events through the configured MCP read tool.
+For each event, it resolves the affected deployment revision and retrieves the
+configured source files from GitHub at that exact commit. Both steps must succeed
+before additional context collection starts; unresolved revisions or unavailable
+source block analysis.
+
+Additional operational logs are collected exclusively through MCP:
+
+- Start with the five minutes before and after the exception's occurrence time.
+- Apply all available `trace_id`, `request_id`, and `instance_id` equality filters.
+  Without those identifiers, collect within the configured service/environment,
+  source allowlist, and time range.
+- If analysis returns `needs_context`, expand to 15 and then 60 minutes on each
+  side, stopping as soon as evidence is sufficient.
+- Validate model requests for additional context against the configured scope
+  and permitted filters before querying MCP. Models cannot select arbitrary
+  servers, tools, backend queries, or credentials.
+- Include related services only through explicitly configured `related_monitors`.
+  The initial implementation supports related scopes bound to the same repository.
+
+Every context query ends no later than the stable cutoff, current time minus
+two minutes. Incident evidence is limited to 10,000 records and 5 MB, with a
+separate 120 KB model-input limit. Incomplete coverage, exhausted budgets, or
+insufficient evidence prevent unsupported Issue publication. Evidence expected
+to become available later and transient read errors may be deferred with bounded
+retries. Checkpoints, pending incidents, and publication intents are retained
+privately for deduplication and recovery.
+
+### Install and run
+
+Before execution, configure the external MCP provider, GitHub authentication,
+and an operator-owned policy outside Git. Install
+[`cao_incident_readonly.config.toml`](config/cao_incident_readonly.config.toml)
+in the server's `CODEX_HOME` with mode `0600`, disable CAO memory injection,
+and follow the [incident setup requirements](docs/INCIDENT-WORKFLOWS.md#setup).
+Issue fixes additionally require a preloaded, digest-pinned Docker test image
+and operator-configured test commands.
+
+```bash
+./scripts/install.sh mcp-exception-issue
+./scripts/install.sh github-issue-fix
+
+# Collect exceptions and related context, then publish supported code Issues.
+./scripts/run.sh mcp-exception-issue --repository owner/repository \
+  --monitor production-api --policy /absolute/operator/incident-policy.json
+
+# Inspect a historical period without publishing or changing monitor state.
+./scripts/run.sh mcp-exception-issue --repository owner/repository \
+  --monitor production-api --policy /absolute/operator/incident-policy.json \
+  --from 2026-10-01T00:00:00Z --until 2026-10-01T01:00:00Z --dry-run
+
+# Develop and test a manually selected Issue without GitHub writes.
+./scripts/run.sh github-issue-fix --repository owner/repository --issue 123 \
+  --policy /absolute/operator/incident-policy.json --apply-mode patch
+
+# Develop, test, and push an Issue-specific branch with a result comment.
+./scripts/run.sh github-issue-fix --repository owner/repository --issue 123 \
+  --policy /absolute/operator/incident-policy.json
+```
+
+Schedule periodic monitoring with an external cron entry that invokes `run.sh`
+using absolute manager and policy paths. Issue remediation remains a separate
+manual execution. Each launcher prints a durable journal path before CAO
+submission; use `--resume /absolute/path/to/EXECUTION.json` to reconcile that
+execution without overriding its frozen inputs. See the
+[recovery guide](docs/INCIDENT-WORKFLOWS.md#recovery-and-evidence-limits) for
+ambiguous publication and explicit operator retries.
