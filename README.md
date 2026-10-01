@@ -1,256 +1,231 @@
 # CAO Workflow Management
 
-Manage CAO Workflows and Agent Profiles in Git and install them into the CAO runtime.
-Git is the source of truth; CAO home is the deployment target.
+Manage CAO workflows and agent profiles in Git, then deploy them to CAO home.
+This repository is the source of truth; CAO home contains installed resources.
 
-| Workflow | Purpose |
-| --- | --- |
-| `github-pr-review` | Review PRs from Code/Security/Test perspectives and publish comments on changed lines |
-| `github-pr-apply` | Turn review findings into a candidate patch, validate it, and optionally push |
+Start with [installation](#setup-and-installation), choose a
+[workflow](#run-a-workflow), then use [status and results](#status-and-results)
+or [troubleshooting](#troubleshooting). Commands below run from this repository's
+root. Replace repository names, PR/Issue numbers, and policy paths with your values.
 
-Run review and apply together through `scripts/run.sh`.
-Models use read-only profiles to review code and propose edits. Workflows handle file changes and GitHub publication.
+## Choose a workflow
 
-## 1. Prepare the Environment
+All four workflows are registered in [manifest.json](manifest.json).
+Their linked READMEs cover configuration, options, results, and recovery.
 
-- Linux/WSL, Python 3.11 or later
-- CAO 2.5.0 or later (`cao`, `cao-server`), Codex CLI, and Codex authentication
-- `git`, `gh`, `jq`, `tmux`
-- GitHub authentication: `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`
-  - Read access: Contents read, Pull requests read, Issues read
-  - Publish reviews: Pull requests write
-  - Push branches: Contents write
+| Workflow | Use it to | Default GitHub effect | Additional setup |
+| --- | --- | --- | --- |
+| [github-pr-review v6](workflows/github-pr-review/README.md) | Review one PR or discover open PRs | Publish a `COMMENT` review with inline findings | Review Codex config |
+| [github-pr-apply v1](workflows/github-pr-apply/README.md) | Apply a review, standalone or after review | Save a tested patch; push requires `--apply-mode push` | Apply Codex config, policy, Docker/test image |
+| [mcp-exception-issue v1](workflows/mcp-exception-issue/README.md) | Analyze MCP exceptions against deployed source | Create or reuse evidence-supported Issues | Incident Codex config, policy, external MCP provider |
+| [github-issue-fix v1](workflows/github-issue-fix/README.md) | Fix a manually selected open Issue | Push a new Issue branch and post a result comment | Incident Codex config, policy, Docker/test image; MCP for incident evidence |
 
-The CAO server and launcher scripts must use the same `CODEX_HOME`.
-The following example uses the default location, `~/.codex`.
+PR review and apply can run together through a resumable coordinator. The two
+incident workflows run independently; neither invokes the other. Models review
+code and propose edits through read-only profiles. Deterministic workflow code
+handles file changes and GitHub publication.
+
+## Setup and installation
+
+### 1. Prepare dependencies and authentication
+
+- Linux/WSL and Python 3.11 or later.
+- CAO 2.5.0 or later (`cao`, `cao-server`), Codex CLI and Codex authentication.
+  The integration was inspected against CAO 2.5.0; revalidate CAO upgrades.
+- `git`, `gh`, `jq`, and `tmux`.
+- GitHub authentication through `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`.
+  Grant Contents/Pull requests/Issues read access as needed, Pull requests write
+  for reviews, Issues write for Issues/comments, and Contents write for pushes.
+
+The CAO server and launchers must use the same account, `CAO_HOME_DIR`, and
+`CODEX_HOME`. Without an override, the manager resolves CAO home from
+`cao config path`; Codex config files go in `~/.codex`.
+
+### 2. Install the named read-only Codex configs
+
+For all workflows, using the default `CODEX_HOME`:
 
 ```bash
 mkdir -p ~/.codex
-cp config/cao_pr_review_readonly.config.toml ~/.codex/
-cp config/cao_pr_apply_readonly.config.toml ~/.codex/
+install -m 600 config/cao_pr_review_readonly.config.toml ~/.codex/
+install -m 600 config/cao_pr_apply_readonly.config.toml ~/.codex/
+install -m 600 config/cao_incident_readonly.config.toml ~/.codex/
 ```
 
-Apply also requires Docker on the same host, a preloaded immutable test image,
-and an [operator policy](config/apply-policy.example.json).
-Configure the actual repository, review authors, image digest, and test commands.
-Store the policy at an absolute path outside the model working directories with permissions `0600`.
-The default policy does not allow push.
-See the [operations guide](docs/OPERATIONS.md) for setup details.
+For a custom `CODEX_HOME`, use that directory instead. These files are separate
+from the agent profiles installed by the resource manager. They enforce Codex's
+read-only sandbox; an agent's `allowedTools` list alone does not enforce it.
+If you customize PR workspace roots, update their trusted paths in the configs.
 
-## 2. Validate and Install
+Start the server in a separate terminal with memory injection disabled:
 
-Start `cao-server` in a separate terminal, then run:
+```bash
+CAO_MEMORY_ENABLED=false cao-server
+```
+
+Incident workflows check the server's effective memory setting. PR workflows
+also require disabled or empty memory injection for their fixed input carriers.
+
+### 3. Validate, install, and inspect resources
 
 ```bash
 make validate
 make test
 make install
-make doctor
 make status
+make doctor
 ```
 
-Installation and updates manage only resources listed in `manifest.json` and skip identical files.
-Unowned files and files modified in the runtime are never overwritten.
+`make install` installs all four workflows and their profiles, validates before
+deployment, and skips identical resources. It does not configure authentication,
+policies, Docker images, or an MCP server. Complete your workflow's additional
+setup before running it.
 
-## 3. Run PR Reviews
+To install only one workflow and its profiles, use
+`./scripts/install.sh WORKFLOW_NAME`, choosing a name from the table above.
+Installation and updates refuse to replace unmanaged or modified runtime files.
+
+## Run a workflow
+
+### Review a PR
 
 ```bash
-# Discover and review open PRs
-./scripts/run.sh github-pr-review --repository owner/repo
-
-# Review a specific PR without publishing
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --dry-run
-
-# Review and publish a specific PR (default mode)
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --publish-mode review
-
-# Review again even if a review marker already exists
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review
+# Run the model review without publishing.
+./scripts/run.sh github-pr-review --repository owner/repository --pr 312 --dry-run
 ```
 
-Findings are published as inline review comments, with a summary in a `COMMENT` review body.
-An existing marker for the same HEAD/base SHA and workflow version causes the review to be skipped.
-`--dry-run` still performs model review but does not publish or leave a marker.
-The workflow never automatically approves, requests changes, or merges a PR.
+Remove `--dry-run` to publish an inline `COMMENT` review. Omit `--pr` to discover
+open, non-draft PRs. The same HEAD/base and workflow version is skipped when its
+review marker exists; `--force-review` reruns it.
+See [PR review](workflows/github-pr-review/README.md) for filtering and options.
 
-Additional options include `--include-drafts`, `--base-branch`, `--workspace-root`, `--model`,
-`--no-publish`, and `--detach`. See [PR Review](docs/GITHUB-PR-REVIEW.md) for detailed inputs.
+### Review and apply findings
 
-## 4. Apply Review Findings
-
-Add `--apply` and `--policy` to the review command.
+Prepare an [apply policy](config/apply-policy.example.json) and a preloaded test
+image first. The coordinator publishes the review before applying it, including
+in patch mode.
 
 ```bash
-# Review → apply → test → save a candidate patch
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 \
-  --apply --policy /absolute/operator/apply-policy.json
-
-# Push to the PR branch when policy and validation conditions are met
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 \
-  --apply --policy /absolute/operator/apply-policy.json --apply-mode push
-
-# Apply findings from a fresh review
-./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review \
+# Review → apply → test → retain a candidate patch (default apply mode).
+./scripts/run.sh github-pr-review --repository owner/repository --pr 312 \
   --apply --policy /absolute/operator/apply-policy.json
 ```
 
-- The default mode is `patch`. Select `push` explicitly to publish changes.
-- Specify one PR with `--pr`. You can also use `--publish-mode review`, `--force-review`, and `--model`.
-- `--dry-run`, `--no-publish`, `--detach`, and PR discovery options are unsupported for combined execution.
-- The coordinator verifies the review ID and original HEAD/base. Partial application, test failures, or HEAD/base changes prevent push.
-- Candidate patches and results are saved under `/tmp/cao-pr-apply/candidate-*`; checkouts are removed.
+Add `--apply-mode push` to push to the PR branch when policy and validation allow
+it. See [PR apply](workflows/github-pr-apply/README.md) for policy setup, standalone
+apply, chain recovery, and the manual GitHub Action.
 
-### Resume an Interrupted Run
+### Analyze MCP exceptions and create Issues
 
-Use the `state_path` printed when execution starts. The default state directory is
-`/tmp/cao-pr-review-apply`, and state files have permissions `0600`.
+Prepare the external provider and [incident policy](config/incident-policy.example.json).
 
 ```bash
-./scripts/run-review-apply.sh --resume /tmp/cao-pr-review-apply/CHAIN.json
+# Analyze without publishing or changing the operational checkpoint.
+./scripts/run.sh mcp-exception-issue --repository owner/repository \
+  --monitor production-api --policy /absolute/operator/incident-policy.json --dry-run
 ```
 
-The coordinator queries the same run IDs and continues execution.
-Retry terminal failed or cancelled runs by starting a new combined run.
-See the [Apply guide](workflows/github-pr-apply/README.md) for standalone apply and workspace settings.
+Remove `--dry-run` to publish supported Issues and retain monitor state.
+See [MCP exception → Issue](workflows/mcp-exception-issue/README.md) for provider
+bindings, historical intervals, cron, and evidence limits.
 
-### Run Through GitHub Actions
+### Fix an open Issue
 
-The [manual Action](.github/workflows/pr-review-apply.yml) runs the same `run.sh` command
-on a runner with the `self-hosted`, `linux`, and `cao` labels.
-Set repository variables `CAO_WORKFLOW_PROJECT_ROOT` and `CAO_APPLY_POLICY_PATH`.
-Prepare the manager checkout and installed resources to match the Action's commit SHA.
-
-## Resource Management
-
-The commands below target all resources. Add `github-pr-review` or `github-pr-apply`
-to an install, update, or uninstall command to manage only that workflow and its associated profiles.
+Prepare the incident policy's fix settings and a preloaded test image.
 
 ```bash
-./scripts/list.sh
-./scripts/install.sh
-./scripts/update.sh
-./scripts/status.sh
-./scripts/doctor.sh
+# Develop and test a patch without GitHub writes.
+./scripts/run.sh github-issue-fix --repository owner/repository --issue 123 \
+  --policy /absolute/operator/incident-policy.json --apply-mode patch
+```
+
+Remove `--apply-mode patch` to use the default **push** mode: create an Issue
+branch and post a result comment. See [Issue fix](workflows/github-issue-fix/README.md)
+for admission, regression tests, artifacts, and recovery. It does not create a PR
+or close the Issue.
+
+## Status and results
+
+Resource installation and workflow execution have separate status commands:
+
+| What to inspect | Command |
+| --- | --- |
+| This repository's resource inventory | `make list` |
+| This project's deployments in the selected CAO home | `make status` |
+| Dependency/auth/config/registry diagnostics | `make doctor` |
+| CAO's registered specs / available profiles | `cao workflow list` / `cao profile list` |
+| Recent executions and run IDs | `cao workflow runs --limit 20` |
+| One execution's state | `cao workflow status RUN_ID` |
+| Recorded events / live progress | `cao workflow events RUN_ID --no-follow` / `cao workflow events RUN_ID` |
+| Retained output and errors | `cao workflow result RUN_ID --json` |
+
+`make status` reports each workflow/profile as follows:
+
+| Status | Meaning / next action |
+| --- | --- |
+| `up-to-date` | Owned deployment matches the Git source |
+| `missing` | Resource is absent; install or update |
+| `outdated` | Owned deployment differs from the current Git source; update |
+| `unmanaged` | File exists without this project's ownership record; identify its owner |
+| `modified` | Deployed file differs from its recorded hash; inspect runtime changes |
+| `context-missing-or-modified` | Agent context copy is absent or changed; inspect it before redeployment |
+
+`make doctor` checks common dependencies, GitHub auth, PR Codex configs,
+deployment ownership/hashes, and the CAO registry. It does not qualify MCP
+bindings, incident config, operator policies, or test images.
+
+A CAO state of `completed` means the script returned. Inspect `output` as well:
+PR workflows use `result` (review has a `results` array); incident workflows use
+`status`, including per-incident statuses. Partial, blocked, deferred, or
+pending-publication work can remain in a completed run.
+
+For interrupted combined runs or incident submissions, keep the printed state
+or journal path and follow the workflow README's resume instructions.
+A lost connection does not prove the server-side run stopped.
+
+## Update and uninstall
+
+After updating this Git checkout, run `make update`, then `make status`.
+For selected resources, use `./scripts/update.sh WORKFLOW_NAME` or
+`./scripts/uninstall.sh WORKFLOW_NAME --yes`. To remove all project resources:
+
+```bash
 ./scripts/uninstall.sh --yes
 ```
 
-Ownership and SHA-256 hashes are recorded in `cao-workflow-project-state.json` in CAO home.
-Removing modified resources is refused by default. After verifying project ownership,
-use `uninstall.sh --yes --force` to bypass the modification check. Ownership checks still apply.
+Ownership and SHA-256 hashes are recorded in `cao-workflow-project-state.json`
+under CAO home. Uninstall refuses modified resources by default. After inspecting
+the changes, `--yes --force` bypasses modification checks for owned resources;
+ownership checks still apply. See [operations](docs/OPERATIONS.md) for rollback
+and provider-specific cleanup.
 
 ## Troubleshooting
 
-| Symptom | What to Check |
+Start with `make status`, `make doctor`, and `cao workflow result RUN_ID --json`.
+
+| Symptom | Check / action |
 | --- | --- |
-| Codex profile error | Copy both profiles into the `CODEX_HOME` used by the server and launcher scripts |
-| GitHub authentication error | Check `gh` authentication and permissions required for the operation |
-| CAO server connection error | Check that `cao-server` is running and verify `CAO_API_PORT` |
-| `unmanaged` / `modified` | Verify deployment ownership and Git sources before updating |
-| Model response or context limit error | Check execution requirements and limits in the [operations guide](docs/OPERATIONS.md) |
+| Missing command or authentication error | Install the reported dependency; verify `gh auth status` and Codex authentication under the CAO account |
+| Server/registry connection error | Start `cao-server`; match `CAO_API_PORT` and CAO home between server and launcher |
+| Named Codex profile missing or invalid | Install the workflow's config in the server/launcher's `CODEX_HOME`; preserve read-only settings |
+| Folder trust prompt / startup timeout | For PR workflows, match the trusted fixed workspace root in the config; see [operations](docs/OPERATIONS.md#troubleshooting) |
+| `missing` / `outdated` deployment | Install/update the selected workflow, then inspect `make status` |
+| `unmanaged` / `modified` / context mismatch | Compare runtime files, ownership state, and Git sources before reconciling; normal update will not overwrite them |
+| Policy, Docker, or MCP admission failure | Use the workflow README's setup checklist; example policies contain placeholders |
+| CAO completed, but no expected review/Issue/push | Inspect workflow output, per-item statuses, and artifacts; completed alone does not establish publication |
+| Connection lost or publication outcome uncertain | Preserve state and resume the recorded execution using the workflow-specific guide |
 
-CAO steps use fixed shell no-op input tokens and JSON responses.
-To preserve this protection, server memory injection must be disabled or its source memory must be empty.
-Do not store credentials or personal CAO state in this repository.
+## Further documentation
 
-## Repository Structure and Documentation
+- [Operations](docs/OPERATIONS.md): deployment, rollback, CAO upgrades, apply runner setup.
+- [Incident operations](docs/INCIDENT-WORKFLOWS.md): provider qualification, policy contracts, recovery.
+- [External MCP log server specification](docs/MCP-LOG-SERVER-SPEC.md): provider contract; server implementation and deployment are external.
+- [Architecture](docs/ARCHITECTURE.md) and [workflow development](docs/WORKFLOW-DEVELOPMENT.md).
+- Design references: [review → apply](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md),
+  [exception → Issue](docs/MCP-EXCEPTION-ISSUE-DESIGN.md), [Issue fix](docs/GITHUB-ISSUE-FIX-DESIGN.md).
 
-| Path | Purpose |
-| --- | --- |
-| `manifest.json` | Single inventory of deployment resources and workflow versions |
-| `agents/` | Agent Profile sources |
-| `workflows/` | CAO script workflow sources |
-| `config/` | Codex configuration and example inputs and policies |
-| `scripts/` | Installation, validation, execution, status checks, and removal |
-| `tests/` | Management, PR review/apply, incident workflow, and MCP client tests and fixtures |
-| `docs/` | Architecture, development, operations, and design documentation |
-
-- [Architecture](docs/ARCHITECTURE.md): CAO contracts and execution structure
-- [Workflow Development](docs/WORKFLOW-DEVELOPMENT.md): Workflow and profile development rules
-- [Operations](docs/OPERATIONS.md): Operational setup, resume, and rollback
-- [PR Review](docs/GITHUB-PR-REVIEW.md): Review inputs and publication policy
-- [Review → Apply Design](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): Combined execution and validation contracts
-- [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Independent workflow for MCP-only log analysis and GitHub Issue creation
-- [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Independent workflow for Issue-driven fixes, isolated validation, and branch push
-- [External MCP Log Server Specification](docs/MCP-LOG-SERVER-SPEC.md): Provider-facing contract; server implementation, deployment, and operation are supplied externally
-
-## Independent incident workflows
-
-`mcp-exception-issue` consumes operational logs exclusively from an external MCP
-provider and creates evidence-supported Issues using source pinned on GitHub.
-`github-issue-fix` independently processes a manually selected Issue, validates
-a candidate in isolated containers, and pushes a new Issue branch plus a result
-comment. MCP server implementation and deployment belong to the external provider.
-
-See [setup, policy, execution and recovery](docs/INCIDENT-WORKFLOWS.md) and the
-[operator policy example](config/incident-policy.example.json). Install the two
-workflows separately using the ownership-checked manager. Neither invokes the other.
-
-### Exception detection and additional log collection
-
-The monitor retrieves exception events through the configured MCP read tool.
-For each event, it resolves the affected deployment revision and retrieves the
-configured source files from GitHub at that exact commit. Both steps must succeed
-before additional context collection starts; unresolved revisions or unavailable
-source block analysis.
-
-Additional operational logs are collected exclusively through MCP:
-
-- Start with the five minutes before and after the exception's occurrence time.
-- Apply all available `trace_id`, `request_id`, and `instance_id` equality filters.
-  Without those identifiers, collect within the configured service/environment,
-  source allowlist, and time range.
-- If analysis returns `needs_context`, expand to 15 and then 60 minutes on each
-  side, stopping as soon as evidence is sufficient.
-- Validate model requests for additional context against the configured scope
-  and permitted filters before querying MCP. Models cannot select arbitrary
-  servers, tools, backend queries, or credentials.
-- Include related services only through explicitly configured `related_monitors`.
-  The initial implementation supports related scopes bound to the same repository.
-
-Every context query ends no later than the stable cutoff, current time minus
-two minutes. Incident evidence is limited to 10,000 records and 5 MB, with a
-separate 120 KB model-input limit. Incomplete coverage, exhausted budgets, or
-insufficient evidence prevent unsupported Issue publication. Evidence expected
-to become available later and transient read errors may be deferred with bounded
-retries. Checkpoints, pending incidents, and publication intents are retained
-privately for deduplication and recovery.
-
-### Install and run
-
-Before execution, configure the external MCP provider, GitHub authentication,
-and an operator-owned policy outside Git. Install
-[`cao_incident_readonly.config.toml`](config/cao_incident_readonly.config.toml)
-in the server's `CODEX_HOME` with mode `0600`, disable CAO memory injection,
-and follow the [incident setup requirements](docs/INCIDENT-WORKFLOWS.md#setup).
-Issue fixes additionally require a preloaded, digest-pinned Docker test image
-and operator-configured test commands.
-
-```bash
-./scripts/install.sh mcp-exception-issue
-./scripts/install.sh github-issue-fix
-
-# Collect exceptions and related context, then publish supported code Issues.
-./scripts/run.sh mcp-exception-issue --repository owner/repository \
-  --monitor production-api --policy /absolute/operator/incident-policy.json
-
-# Inspect a historical period without publishing or changing monitor state.
-./scripts/run.sh mcp-exception-issue --repository owner/repository \
-  --monitor production-api --policy /absolute/operator/incident-policy.json \
-  --from 2026-10-01T00:00:00Z --until 2026-10-01T01:00:00Z --dry-run
-
-# Develop and test a manually selected Issue without GitHub writes.
-./scripts/run.sh github-issue-fix --repository owner/repository --issue 123 \
-  --policy /absolute/operator/incident-policy.json --apply-mode patch
-
-# Develop, test, and push an Issue-specific branch with a result comment.
-./scripts/run.sh github-issue-fix --repository owner/repository --issue 123 \
-  --policy /absolute/operator/incident-policy.json
-```
-
-Schedule periodic monitoring with an external cron entry that invokes `run.sh`
-using absolute manager and policy paths. Issue remediation remains a separate
-manual execution. Each launcher prints a durable journal path before CAO
-submission; use `--resume /absolute/path/to/EXECUTION.json` to reconcile that
-execution without overriding its frozen inputs. See the
-[recovery guide](docs/INCIDENT-WORKFLOWS.md#recovery-and-evidence-limits) for
-ambiguous publication and explicit operator retries.
+`agents/` contains profiles, `workflows/` contains workflow sources, `config/`
+contains examples, `scripts/` contains launchers/resource management, and `tests/`
+contains validation fixtures. Keep credentials, personal CAO state, target
+checkouts, and `.env` files outside this repository. Example JSON inputs are
+reference material; launchers do not automatically load them.
