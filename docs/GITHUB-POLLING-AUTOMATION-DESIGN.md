@@ -87,6 +87,13 @@ installable and runnable. Their standalone launchers do not require this polling
 integration. Implementing either workflow does not enable an automatic Issue-fix
 Binding or make an exception Issue trigger remediation.
 
+Their MCP dependency is an externally implemented and operated log server,
+defined by the shared [MCP Log Server Specification](MCP-LOG-SERVER-SPEC.md).
+This repository owns that specification and consuming client/adapter contracts.
+Neither the polling integration nor future adapters implement, deploy, or install
+an MCP server or logging-backend connector. Server connection bindings are
+operator configuration, not additional managed deployment resources.
+
 The polling job store owns event observations, dispatch deduplication, job
 claims, attempts, and assigned execution IDs. A Handler's execution journal owns
 its CAO submission/result identities and workflow recovery state. The workflow

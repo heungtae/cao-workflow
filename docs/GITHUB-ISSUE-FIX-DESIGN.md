@@ -22,6 +22,11 @@ MCP before treating the records as verified operational evidence. Ordinary
 Issues that require no operational logs can proceed from their specification,
 GitHub source, and local regression-test results.
 
+MCP log servers are provided, deployed, and operated externally. This repository
+defines their shared [provider specification](MCP-LOG-SERVER-SPEC.md) and implements
+the workflow-side client/adapter. MCP server code, backend integrations, and
+server deployment are outside the fix workflow's implementation scope.
+
 ```mermaid
 flowchart TD
     Trigger[Manual repository and Issue selection] --> Snapshot[Fetch Issue snapshot from GitHub]
@@ -176,11 +181,15 @@ correlation IDs, and deployed revision from validated metadata or the Issue
 description together with operator configuration. Replay the indicated queries
 through MCP and obtain additional evidence as needed.
 
-Use an internal adapter mapped to configured server tools, supporting stdio
-and Streamable HTTP through the installed MCP SDK 1.30.0. Normalize occurrence
-time, service/environment, record identity, message, and optional stack/trace,
-instance, and deployment fields. Every operational evidence item retains its
-MCP server/tool/query/record provenance.
+Use a client-side adapter mapped to externally provided tools and validated
+against the shared [MCP Log Server Specification](MCP-LOG-SERVER-SPEC.md), including
+its schemas, coverage/cursor semantics, errors, and compatibility. Support stdio
+and Streamable HTTP through the installed MCP SDK 1.30.0 client, targeting MCP
+`2025-11-25`. Normalize occurrence time, service/environment, record identity,
+message, and optional stack/trace, instance, and deployment fields. Every
+operational evidence item retains its MCP server/tool/query/record provenance.
+Use an external conforming server or a tested native mapping; no server tools
+or deployment resources are implemented by this workflow.
 
 Begin with five minutes before and after the incident; allow expansion to
 15 and then 60 minutes on each side. Clip the end to the stable collection
@@ -411,6 +420,9 @@ it must never be reported as confirmed failure or success without remote evidenc
 - Qualify actual model proposals, MCP evidence retrieval, GitHub branch push,
   and Issue comments separately in a test repository. Verify the Issue remains
   open and the remote commit has exactly the validated base parent.
+- Validate MCP client fixtures against the shared provider specification. Live
+  retrieval requires a server supplied by the external provider; fixture-based
+  validation does not establish provider availability or live integration.
 - Update README and operations documentation. Bump the workflow version when
   fix semantics or publication gates change, invalidating stale execution keys.
 

@@ -16,6 +16,11 @@ GitHub at a resolved commit SHA. Local log files, SSH, direct logging-backend
 APIs, and existing workspace source checkouts are not acquisition sources.
 Temporary storage of MCP-derived evidence and GitHub-derived source is allowed.
 
+The MCP log server is implemented, deployed, and operated by an external
+provider. This repository supplies the [external server specification](MCP-LOG-SERVER-SPEC.md)
+and the consuming workflow/client adapter only. Server code, deployment,
+backend collectors, and backend administration are outside this workflow's scope.
+
 The workflow runs periodically or for an explicitly requested time range. It
 does not invoke the remediation workflow. An Issue is the handoff artifact for
 the independently executed [GitHub Issue Fix Workflow](GITHUB-ISSUE-FIX-DESIGN.md).
@@ -129,6 +134,14 @@ retained evidence yields `blocked` rather than an automatic fresh execution.
 
 ## Operator configuration and MCP adapter
 
+Both incident workflows consume the same versioned
+[MCP Log Server Specification](MCP-LOG-SERVER-SPEC.md). It defines provider-facing
+query/record schemas, time boundaries, coverage, pagination, errors,
+authentication handoff, and compatibility. The adapter is client-side code that
+validates and maps externally supplied tools to that contract; it is not an MCP
+server. A conforming external server or a tested native mapping is an execution
+prerequisite.
+
 The operator policy defines monitoring scopes, MCP connections, repository
 bindings, deployment-revision resolution, budgets, credentials, and private
 state/artifact locations. Validate its schema and ownership before connecting.
@@ -147,14 +160,17 @@ Each monitoring scope specifies:
 - Collection windows, record/byte budgets, source context restrictions, and
   private state/artifact locations.
 
-Use the installed MCP Python SDK 1.30.0 APIs for stdio and Streamable HTTP.
+Use the installed MCP Python SDK 1.30.0 client APIs for stdio and Streamable HTTP,
+targeting its supported MCP protocol revision `2025-11-25`.
 Connection setup initializes the MCP session, lists tools, and verifies the
 configured tools and required argument schemas. Tool selection is controlled
 by the operator policy, rather than tool annotations or model suggestions.
 No write tools are exposed to the model.
 
-The adapter provides the following logical operations. These are internal
-interfaces mapped to existing server tools, not required new MCP tool names.
+The adapter provides the following logical operations, whose provider-facing
+semantics are specified in the shared contract. External tools may expose its
+preferred names or use an explicit tested native mapping; this repository does
+not implement those server tools.
 
 | Operation | Inputs | Outputs |
 | --- | --- | --- |
@@ -393,6 +409,9 @@ CAO script completion alone does not establish successful Issue publication.
 - Qualify real MCP retrieval and GitHub publication separately in a test
   repository. Confirm that no operational log acquisition bypasses MCP and all
   analyzed source snapshots are fetched from GitHub.
+- Validate client-side contract fixtures against the shared provider specification.
+  Live MCP qualification uses an externally supplied test server; this project
+  does not implement or install a server to satisfy that prerequisite.
 
 ## References
 

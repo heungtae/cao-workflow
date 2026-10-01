@@ -171,3 +171,4 @@ Do not store credentials or personal CAO state in this repository.
 - [Review → Apply Design](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): Combined execution and validation contracts
 - [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Proposed independent workflow for MCP-only log analysis and GitHub Issue creation
 - [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Proposed independent workflow for Issue-driven fixes, isolated validation, and branch push
+- [External MCP Log Server Specification](docs/MCP-LOG-SERVER-SPEC.md): Provider-facing contract; server implementation, deployment, and operation are supplied externally
