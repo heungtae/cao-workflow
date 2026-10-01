@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "repositories": {
+    "owner/repository": {
+      "state_root": "/absolute/operator/incident-state",
+      "workspace_root": "/absolute/operator/incident-workspaces",
+      "github_token_file": "/absolute/operator/github-token",
+      "redact_patterns": ["[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"],
+      "mcp_connections": {
+        "provider": {
+          "id": "external-production-logs",
+          "transport": "streamable-http",
+          "url": "https://logs.example.invalid/mcp",
+          "token_file": "/absolute/operator/mcp-token",
+          "tools": {"exceptions": "logs_search_exceptions", "context": "logs_search_context"},
+          "schema_digests": {"exceptions": "REPLACE_WITH_QUALIFIED_SCHEMA_SHA256", "context": "REPLACE_WITH_QUALIFIED_SCHEMA_SHA256"}
+        }
+      },
+      "monitors": {
+        "production-api": {
+          "service": "api",
+          "environment": "production",
+          "connection": "provider",
+          "source_ids": ["application", "access"],
+          "source_paths": ["src/app.py", "tests/test_app.py"],
+          "page_limit": 500,
+          "max_incidents": 20,
+          "related_monitors": [],
+          "variable_patterns": [],
+          "deployments": []
+        }
+      },
+      "base_branch": "main",
+      "branch_prefix": "cao/issue-",
+      "git_author_name": "Incident Automation",
+      "git_author_email": "automation@example.invalid",
+      "source_paths": ["src/app.py", "tests/test_app.py"],
+      "editable_paths": ["src/**", "tests/**"],
+      "regression_test_paths": ["tests/**"],
+      "new_files": [],
+      "test_image": "tests@sha256:REPLACE_WITH_PRELOADED_IMAGE_DIGEST",
+      "test_commands": [["python3", "-m", "unittest", "discover", "-s", "tests"]],
+      "allow_code_issues": true,
+      "incident_publishers": ["REPLACE_WITH_GITHUB_PUBLISHER_LOGIN"],
+      "issue_incidents": {}
+    }
+  }
+}

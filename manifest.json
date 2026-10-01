@@ -1,15 +1,75 @@
 {
   "schema_version": 1,
   "workflows": [
-    {"name": "github-pr-review", "version": "v6", "source": "workflows/github-pr-review/workflow.py", "agents": ["pr-code-reviewer", "pr-security-reviewer", "pr-test-reviewer", "pr-review-aggregator", "pr-review-publisher"]},
-    {"name": "github-pr-apply", "version": "v1", "source": "workflows/github-pr-apply/workflow.py", "agents": ["pr-review-applier"]}
+    {
+      "name": "github-pr-review",
+      "version": "v6",
+      "source": "workflows/github-pr-review/workflow.py",
+      "agents": [
+        "pr-code-reviewer",
+        "pr-security-reviewer",
+        "pr-test-reviewer",
+        "pr-review-aggregator",
+        "pr-review-publisher"
+      ]
+    },
+    {
+      "name": "github-pr-apply",
+      "version": "v1",
+      "source": "workflows/github-pr-apply/workflow.py",
+      "agents": [
+        "pr-review-applier"
+      ]
+    },
+    {
+      "name": "mcp-exception-issue",
+      "version": "v1",
+      "source": "workflows/mcp-exception-issue/workflow.py",
+      "agents": [
+        "exception-triager"
+      ]
+    },
+    {
+      "name": "github-issue-fix",
+      "version": "v1",
+      "source": "workflows/github-issue-fix/workflow.py",
+      "agents": [
+        "issue-fixer"
+      ]
+    }
   ],
   "agents": [
-    {"name": "pr-code-reviewer", "source": "agents/pr-code-reviewer.md"},
-    {"name": "pr-security-reviewer", "source": "agents/pr-security-reviewer.md"},
-    {"name": "pr-test-reviewer", "source": "agents/pr-test-reviewer.md"},
-    {"name": "pr-review-aggregator", "source": "agents/pr-review-aggregator.md"},
-    {"name": "pr-review-publisher", "source": "agents/pr-review-publisher.md"},
-    {"name": "pr-review-applier", "source": "agents/pr-review-applier.md"}
+    {
+      "name": "pr-code-reviewer",
+      "source": "agents/pr-code-reviewer.md"
+    },
+    {
+      "name": "pr-security-reviewer",
+      "source": "agents/pr-security-reviewer.md"
+    },
+    {
+      "name": "pr-test-reviewer",
+      "source": "agents/pr-test-reviewer.md"
+    },
+    {
+      "name": "pr-review-aggregator",
+      "source": "agents/pr-review-aggregator.md"
+    },
+    {
+      "name": "pr-review-publisher",
+      "source": "agents/pr-review-publisher.md"
+    },
+    {
+      "name": "pr-review-applier",
+      "source": "agents/pr-review-applier.md"
+    },
+    {
+      "name": "exception-triager",
+      "source": "agents/exception-triager.md"
+    },
+    {
+      "name": "issue-fixer",
+      "source": "agents/issue-fixer.md"
+    }
   ]
 }

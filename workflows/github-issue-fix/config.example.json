@@ -1,0 +1,6 @@
+{
+  "repository": "owner/repository",
+  "policy_path": "/absolute/operator/incident-policy.json",
+  "issue_number": 123,
+  "apply_mode": "patch"
+}

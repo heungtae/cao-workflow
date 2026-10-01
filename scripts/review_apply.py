@@ -222,7 +222,8 @@ def preflight(request: dict) -> tuple[dict, dict[str, Path]]:
     # Avoid spending a review run before discovering unavailable test isolation.
     command(['docker', 'image', 'inspect', image])
     fingerprint = manage.digest(path)
-    versions = {w['name']: w['version'] for w in manage.load_manifest()['workflows']}
+    versions = {w['name']: w['version'] for w in manage.load_manifest()['workflows']
+                if w['name'] in ('github-pr-review', 'github-pr-apply')}
     if request.get('policy_digest') and request['policy_digest'] != fingerprint:
         raise ValueError('Policy changed since this chain started')
     if request.get('versions') and request['versions'] != versions:

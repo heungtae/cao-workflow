@@ -111,3 +111,9 @@ PR discovery, and `--detach` are unsupported. For standalone apply, use
 `run.sh github-pr-apply --pr ... --review-id ... --head-sha ... --policy ...`
 with the required repository argument. Combined execution replaces the launcher
 process with the coordinator, preserving exit codes and cancellation signals.
+
+## Incident workflows
+
+See [Incident workflow operations](INCIDENT-WORKFLOWS.md) for external MCP provider
+bindings, independent workflow installation, private policies, manual/cron
+execution, and durable publication recovery.

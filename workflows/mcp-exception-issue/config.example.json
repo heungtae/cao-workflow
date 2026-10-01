@@ -1,0 +1,5 @@
+{
+  "repository": "owner/repository",
+  "policy_path": "/absolute/operator/incident-policy.json",
+  "monitor_id": "production-api"
+}

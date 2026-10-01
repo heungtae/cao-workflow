@@ -1,7 +1,9 @@
 # GitHub Issue Fix and Branch Push Workflow Design
 
-Status: Proposed. This document defines a new workflow; it does not describe an
-installed or implemented automation.
+Status: Initial implementation delivered as v1. See
+[incident operations](INCIDENT-WORKFLOWS.md) for supported configuration,
+qualification requirements, and execution limits. Live external-provider/model/
+GitHub qualification remains environment-dependent.
 
 ## Purpose and independent execution
 

@@ -175,6 +175,7 @@ def selected(manifest: dict, name: str | None) -> dict:
 
 def validate() -> dict:
     prerequisites()
+    command(sys.executable, str(ROOT / 'scripts/build_incident_workflows.py'), '--check')
     manifest = load_manifest()
     defaults = json.loads((ROOT / "config/defaults.json").read_text())
     validate_defaults(defaults)
@@ -419,6 +420,8 @@ def doctor() -> None:
 
 
 def run(argv: list[str]) -> None:
+    if argv and argv[0] in ('mcp-exception-issue', 'github-issue-fix'):
+        os.execv(sys.executable, [sys.executable, str(ROOT / 'scripts/incident_run.py'), *argv])
     parser = argparse.ArgumentParser(prog="run.sh")
     parser.add_argument("workflow")
     parser.add_argument("--repository", required=True)

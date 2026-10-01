@@ -14,7 +14,7 @@ spec.loader.exec_module(manage)
 class ManagementTests(unittest.TestCase):
     def test_manifest_and_config(self):
         manifest = manage.load_manifest()
-        self.assertEqual(6, len(manifest["agents"]))
+        self.assertEqual(8, len(manifest["agents"]))
         defaults = json.loads((ROOT / "config/defaults.json").read_text())
         self.assertEqual("review", defaults["publish_mode"])
         manage.validate_defaults(defaults)
@@ -53,7 +53,7 @@ class ManagementTests(unittest.TestCase):
     def test_actual_profile_and_workflow_validation(self):
         # Exercises CAO's installed profile schema and script linter.
         with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"CAO_HOME_DIR": directory}):
-            self.assertEqual(2, len(manage.validate()["workflows"]))
+            self.assertEqual(4, len(manage.validate()["workflows"]))
 
     def test_install_skips_identical_owned_resources(self):
         with tempfile.TemporaryDirectory() as directory:

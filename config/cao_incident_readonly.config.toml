@@ -1,0 +1,6 @@
+# Install in the CAO server's CODEX_HOME as cao_incident_readonly.config.toml (0600).
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[shell_environment_policy]
+inherit = "none"

@@ -172,3 +172,15 @@ Do not store credentials or personal CAO state in this repository.
 - [MCP Exception → Issue Design](docs/MCP-EXCEPTION-ISSUE-DESIGN.md): Proposed independent workflow for MCP-only log analysis and GitHub Issue creation
 - [Issue Fix → Push Design](docs/GITHUB-ISSUE-FIX-DESIGN.md): Proposed independent workflow for Issue-driven fixes, isolated validation, and branch push
 - [External MCP Log Server Specification](docs/MCP-LOG-SERVER-SPEC.md): Provider-facing contract; server implementation, deployment, and operation are supplied externally
+
+## Independent incident workflows
+
+`mcp-exception-issue` consumes operational logs exclusively from an external MCP
+provider and creates evidence-supported Issues using source pinned on GitHub.
+`github-issue-fix` independently processes a manually selected Issue, validates
+a candidate in isolated containers, and pushes a new Issue branch plus a result
+comment. MCP server implementation and deployment belong to the external provider.
+
+See [setup, policy, execution and recovery](docs/INCIDENT-WORKFLOWS.md) and the
+[operator policy example](config/incident-policy.example.json). Install the two
+workflows separately using the ownership-checked manager. Neither invokes the other.
