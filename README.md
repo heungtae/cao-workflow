@@ -59,12 +59,19 @@ Install/update는 검증 후 배포하며, 동일한 파일은 건너뜁니다. 
 ## Review → Apply
 
 ```bash
-./scripts/run-review-apply.sh --repository owner/repo --pr 312 \
+./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --apply \
   --policy /absolute/operator/apply-policy.json
 # 브랜치 allowlist와 검증 조건을 충족할 때만 선택
-./scripts/run-review-apply.sh --repository owner/repo --pr 312 \
+./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --apply \
   --policy /absolute/operator/apply-policy.json --apply-mode push
 ```
+
+기존 review 명령에 `--apply --policy /absolute/operator/apply-policy.json`을 추가하면
+review → apply를 순차 실행합니다. `--publish-mode review`, `--force-review`,
+`--model`을 함께 사용할 수 있습니다. `--dry-run`/`--no-publish`는 apply와
+함께 사용할 수 없으며, 연결 실행은 `--pr`로 하나의 PR을 지정해야 합니다.
+`--apply-mode push`를 명시하지 않으면 후보 patch만 생성합니다.
+기존 `run-review-apply.sh`는 재개 및 세부 workspace 설정용으로 유지합니다.
 
 실행기는 정수 review ID와 원래 HEAD/base를 검증한 뒤 apply를 시작합니다.
 모든 finding에 outcome이 필요하며 부분 적용은 푸시하지 않습니다. 후보 patch와

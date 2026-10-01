@@ -46,6 +46,6 @@ jobs:
           test -n "$POLICY_PATH"
           test "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" = "$MANAGER_SHA"
           test -z "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all)"
-          exec "$PROJECT_ROOT/scripts/run-review-apply.sh" \
+          exec "$PROJECT_ROOT/scripts/run.sh" github-pr-review --apply \
             --repository "$TARGET_REPOSITORY" --pr "$PR_NUMBER" \
             --policy "$POLICY_PATH" --apply-mode "$APPLY_MODE"

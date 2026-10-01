@@ -96,3 +96,18 @@ It requires a preinstalled Python 3 image and verifies no external network,
 credential environment, `.git`/`.env` mount, or mutation of the original candidate.
 Local unit/installation/isolation evidence does not establish real provider output
 quality or live GitHub publication; qualify those separately against a test PR.
+
+### 공통 run.sh에서 연결 실행
+
+```bash
+./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --apply \
+  --policy /absolute/operator/apply-policy.json
+./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review --apply \
+  --policy /absolute/operator/apply-policy.json --apply-mode push
+```
+
+`--publish-mode review`는 함께 사용할 수 있습니다. dry-run/no-publish, PR 검색,
+`--detach`는 연결 실행에서 지원하지 않습니다. 개별 apply 실행은 기존
+`run.sh github-pr-apply --pr ... --review-id ... --head-sha ... --policy ...`를
+사용합니다. 연결 실행은 프로세스를 coordinator로 교체하므로 종료 코드와
+취소 신호가 그대로 전달됩니다.

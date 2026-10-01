@@ -18,4 +18,4 @@ uninstall:
 review:
 	./scripts/run.sh github-pr-review --repository "$(REPO)" $(if $(PR),--pr "$(PR)",)
 review-apply:
-	./scripts/run-review-apply.sh --repository "$(REPO)" --pr "$(PR)" --policy "$(POLICY)" --apply-mode "$(or $(APPLY_MODE),patch)"
+	./scripts/run.sh github-pr-review --apply --repository "$(REPO)" --pr "$(PR)" --policy "$(POLICY)" --apply-mode "$(or $(APPLY_MODE),patch)"

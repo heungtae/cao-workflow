@@ -434,10 +434,31 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--head-sha")
     parser.add_argument("--review-id", type=int)
     parser.add_argument("--policy", dest="policy_path")
-    parser.add_argument("--apply-mode", choices=("patch", "push"), default="patch")
+    parser.add_argument("--apply-mode", choices=("patch", "push"))
+    parser.add_argument("--apply", action="store_true", help="Run review then apply for one PR")
     parser.add_argument("--expected-findings", type=int)
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args(argv)
+    if args.apply:
+        if args.workflow != 'github-pr-review' or not args.pr_number or args.pr_number <= 0 or not args.policy_path:
+            raise ManagementError("--apply requires github-pr-review --pr N --policy /absolute/file", 3)
+        if any((args.dry_run, args.no_publish, args.publish_mode == 'dry-run', args.include_drafts,
+                args.base_branch, args.workspace_root, args.head_sha, args.review_id,
+                args.expected_findings is not None, args.detach)):
+            raise ManagementError("--apply requires published reviews; discovery, dry-run, standalone and detach flags are unsupported", 3)
+        cmd = [sys.executable, str(ROOT / 'scripts/review_apply.py'), '--repository', args.repository,
+               '--pr', str(args.pr_number), '--policy', args.policy_path,
+               '--apply-mode', args.apply_mode or 'patch']
+        if args.model:
+            cmd += ['--model', args.model]
+        if args.force_review:
+            cmd.append('--force-review')
+        os.execv(sys.executable, cmd)
+    if args.workflow == 'github-pr-review' and any((args.policy_path, args.apply_mode, args.head_sha,
+                                                  args.review_id, args.expected_findings is not None)):
+        raise ManagementError("Use --apply for review plus apply, or github-pr-apply for standalone apply", 3)
+    if args.workflow == 'github-pr-apply':
+        args.apply_mode = args.apply_mode or 'patch'
     prerequisites(runtime=True)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository) or ".." in args.repository:
         raise ManagementError("Repository must be owner/name", 3)

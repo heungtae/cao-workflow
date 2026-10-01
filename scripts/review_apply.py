@@ -241,6 +241,8 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
     review_inputs = {'repository': repo, 'pr_number': number, 'expected_head_sha': sha,
                      'expected_base_sha': request['base_sha'],
                      'publish_mode': 'review', 'workspace_root': request['review_workspace']}
+    if request.get('force_review'):
+        review_inputs['force_review'] = True
     if request.get('model'):
         review_inputs['model'] = request['model']
     reviewed = execute_stage('github-pr-review', review_inputs, state, journal, deployed['github-pr-review'])
@@ -288,6 +290,7 @@ def main() -> int:
     parser.add_argument('--policy')
     parser.add_argument('--apply-mode', choices=('patch', 'push'), default='patch')
     parser.add_argument('--model')
+    parser.add_argument('--force-review', action='store_true')
     parser.add_argument('--state-root', default='/tmp/cao-pr-review-apply')
     parser.add_argument('--review-workspace', default='/tmp/cao-pr-review')
     parser.add_argument('--apply-workspace', default='/tmp/cao-pr-apply')
@@ -295,7 +298,7 @@ def main() -> int:
     args = parser.parse_args()
     root = private_root(args.state_root)
     if args.resume:
-        if any((args.repository, args.pr, args.policy, args.model)) or args.apply_mode != 'patch':
+        if any((args.repository, args.pr, args.policy, args.model, args.force_review)) or args.apply_mode != 'patch':
             raise ValueError('Resume uses the retained request; do not override its inputs')
         journal, state = args.resume.resolve(), load_state(args.resume)
         if journal.parent != root:
@@ -306,7 +309,7 @@ def main() -> int:
         operator_policy(args.policy, args.repository)
         pr = api(args.repository, f'pulls/{args.pr}')
         request = {'repository': args.repository, 'pr_number': args.pr, 'policy_path': args.policy,
-                   'apply_mode': args.apply_mode, 'model': args.model, 'head_sha': pr['head']['sha'],
+                   'apply_mode': args.apply_mode, 'model': args.model, 'force_review': args.force_review, 'head_sha': pr['head']['sha'],
                    'head_ref': pr['head']['ref'], 'head_repository': pr['head']['repo']['full_name'],
                    'base_sha': pr['base']['sha'], 'review_workspace': args.review_workspace,
                    'apply_workspace': args.apply_workspace}

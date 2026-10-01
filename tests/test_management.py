@@ -121,6 +121,29 @@ class ManagementTests(unittest.TestCase):
                     manage.uninstall(None, True)
             self.assertTrue(context.exists())
 
+    def test_run_wrapper_routes_review_apply_and_preserves_force(self):
+        with patch.object(manage.os, 'execv', side_effect=SystemExit(0)) as execute:
+            with self.assertRaises(SystemExit):
+                manage.run(['github-pr-review', '--repository', 'owner/repo', '--pr', '312',
+                            '--publish-mode', 'review', '--force-review', '--apply',
+                            '--policy', '/operator/policy.json', '--apply-mode', 'push'])
+        argv = execute.call_args.args[1]
+        self.assertEqual(str(ROOT / 'scripts/review_apply.py'), argv[1])
+        self.assertIn('--force-review', argv)
+        self.assertEqual('push', argv[argv.index('--apply-mode') + 1])
+        self.assertEqual('312', argv[argv.index('--pr') + 1])
+
+    def test_run_wrapper_rejects_incompatible_apply_before_execution(self):
+        base = ['github-pr-review', '--repository', 'owner/repo', '--pr', '312',
+                '--apply', '--policy', '/operator/policy.json']
+        with patch.object(manage.os, 'execv') as execute:
+            for flag in ('--dry-run', '--no-publish', '--detach', '--include-drafts'):
+                with self.subTest(flag=flag), self.assertRaises(manage.ManagementError):
+                    manage.run(base + [flag])
+            with self.assertRaises(manage.ManagementError):
+                manage.run(['github-pr-review', '--repository', 'owner/repo', '--apply'])
+            execute.assert_not_called()
+
     def test_run_wrapper_maps_inputs_to_cao(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

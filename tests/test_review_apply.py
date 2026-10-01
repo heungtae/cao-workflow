@@ -36,11 +36,13 @@ def apply_output():
 
 
 class ChainTests(unittest.TestCase):
-    def run_chain(self, outputs, *, changed=False, count=1):
+    def run_chain(self, outputs, *, changed=False, count=1, force=False):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / 'state.json'
             current = pr('c' * 40) if changed else pr()
             def invoke(name, inputs, saved, path, deployed):
+                if name == 'github-pr-review':
+                    self.assertEqual(force, inputs.get('force_review', False))
                 if name == 'github-pr-apply':
                     self.assertEqual(12, inputs['review_id'])
                     self.assertEqual(SHA, inputs['head_sha'])
@@ -51,13 +53,17 @@ class ChainTests(unittest.TestCase):
                     raise output
                 return output
             with patch.object(chain, 'api', return_value=current), patch.object(chain, 'execute_stage', side_effect=invoke) as execute, patch.object(chain, 'eligible_review', return_value=review()), patch.object(chain, 'pages', return_value=[{'id': 34}] * count):
-                result = chain.orchestrate(state(), journal, policy(), {'github-pr-review': Path('/review'), 'github-pr-apply': Path('/apply')})
+                saved = state()
+                saved['request']['force_review'] = force
+                result = chain.orchestrate(saved, journal, policy(), {'github-pr-review': Path('/review'), 'github-pr-apply': Path('/apply')})
                 return result, execute.call_count
 
     def test_review_completed_starts_exact_apply_and_zero_findings_skips(self):
         result, calls = self.run_chain([review_output(), apply_output()])
         self.assertEqual('applied', result['result'])
         self.assertEqual(2, calls)
+        result, calls = self.run_chain([review_output(), apply_output()], force=True)
+        self.assertEqual('applied', result['result'])
         result, calls = self.run_chain([review_output(count=0)], count=0)
         self.assertEqual('skipped', result['result'])
         self.assertEqual(1, calls)
