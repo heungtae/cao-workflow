@@ -1,28 +1,28 @@
 # CAO Workflow Management
 
-CAO Workflow와 Agent Profile을 Git에서 관리하고 CAO runtime에 설치하는 저장소입니다.
-Git이 원본이며, CAO 홈은 배포 대상입니다.
+Manage CAO Workflows and Agent Profiles in Git and install them into the CAO runtime.
+Git is the source of truth; CAO home is the deployment target.
 
-| Workflow | 역할 |
+| Workflow | Purpose |
 | --- | --- |
-| `github-pr-review` | PR을 Code/Security/Test 관점에서 검토하고 변경 줄에 리뷰 게시 |
-| `github-pr-apply` | 리뷰 조치안을 후보 patch로 만들고 검증 후 선택적으로 push |
+| `github-pr-review` | Review PRs from Code/Security/Test perspectives and publish comments on changed lines |
+| `github-pr-apply` | Turn review findings into a candidate patch, validate it, and optionally push |
 
-Review와 apply는 `scripts/run.sh`에서 한 번에 실행할 수 있습니다.
-모델은 read-only profile로 리뷰와 수정안을 제안하며, 파일 변경과 GitHub 게시는 워크플로가 처리합니다.
+Run review and apply together through `scripts/run.sh`.
+Models use read-only profiles to review code and propose edits. Workflows handle file changes and GitHub publication.
 
-## 1. 실행 환경 준비
+## 1. Prepare the Environment
 
-- Linux/WSL, Python 3.11 이상
-- CAO 2.5.0 이상 (`cao`, `cao-server`), Codex CLI 및 Codex 인증
+- Linux/WSL, Python 3.11 or later
+- CAO 2.5.0 or later (`cao`, `cao-server`), Codex CLI, and Codex authentication
 - `git`, `gh`, `jq`, `tmux`
-- GitHub 인증: `gh auth login` 또는 `GH_TOKEN`/`GITHUB_TOKEN`
-  - 조회: Contents read, Pull requests read, Issues read
-  - 리뷰 게시: Pull requests write
-  - 브랜치 push: Contents write
+- GitHub authentication: `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`
+  - Read access: Contents read, Pull requests read, Issues read
+  - Publish reviews: Pull requests write
+  - Push branches: Contents write
 
-CAO 서버와 실행 스크립트는 같은 `CODEX_HOME`을 사용해야 합니다.
-다음은 기본 위치인 `~/.codex`를 사용하는 예입니다.
+The CAO server and launcher scripts must use the same `CODEX_HOME`.
+The following example uses the default location, `~/.codex`.
 
 ```bash
 mkdir -p ~/.codex
@@ -30,16 +30,16 @@ cp config/cao_pr_review_readonly.config.toml ~/.codex/
 cp config/cao_pr_apply_readonly.config.toml ~/.codex/
 ```
 
-Apply에는 같은 호스트의 Docker, 사전 준비된 불변 test image,
-[운영자 정책](config/apply-policy.example.json)이 추가로 필요합니다.
-정책의 저장소·리뷰 작성자·image digest·테스트 명령을 실제 값으로 설정하고,
-모델 작업 디렉터리 밖의 절대 경로에 권한 `0600`으로 보관하세요.
-기본 정책은 push를 허용하지 않습니다.
-자세한 설정은 [운영 가이드](docs/OPERATIONS.md)를 참고하세요.
+Apply also requires Docker on the same host, a preloaded immutable test image,
+and an [operator policy](config/apply-policy.example.json).
+Configure the actual repository, review authors, image digest, and test commands.
+Store the policy at an absolute path outside the model working directories with permissions `0600`.
+The default policy does not allow push.
+See the [operations guide](docs/OPERATIONS.md) for setup details.
 
-## 2. 검증 및 설치
+## 2. Validate and Install
 
-별도 터미널에서 `cao-server`를 실행한 뒤 아래 명령을 진행합니다.
+Start `cao-server` in a separate terminal, then run:
 
 ```bash
 make validate
@@ -49,80 +49,81 @@ make doctor
 make status
 ```
 
-설치와 갱신은 `manifest.json`에 등록된 리소스만 관리하며, 동일한 파일은 건너뜁니다.
-소유권이 없거나 runtime에서 수정된 파일은 덮어쓰지 않습니다.
+Installation and updates manage only resources listed in `manifest.json` and skip identical files.
+Unowned files and files modified in the runtime are never overwritten.
 
-## 3. PR 리뷰 실행
+## 3. Run PR Reviews
 
 ```bash
-# 열린 PR 검색 및 리뷰
+# Discover and review open PRs
 ./scripts/run.sh github-pr-review --repository owner/repo
 
-# 특정 PR 검토, 게시 생략
+# Review a specific PR without publishing
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --dry-run
 
-# 특정 PR 검토 및 게시 (기본 모드)
+# Review and publish a specific PR (default mode)
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --publish-mode review
 
-# 기존 리뷰 marker가 있어도 다시 검토
+# Review again even if a review marker already exists
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review
 ```
 
-Finding은 inline review comment로, 요약은 `COMMENT` review 본문으로 게시합니다.
-같은 HEAD/base SHA와 workflow 버전의 marker가 있으면 건너뜁니다.
-`--dry-run`도 실제 모델 검토를 수행하지만 게시하거나 marker를 남기지 않습니다.
-자동 APPROVE, REQUEST_CHANGES, merge는 하지 않습니다.
+Findings are published as inline review comments, with a summary in a `COMMENT` review body.
+An existing marker for the same HEAD/base SHA and workflow version causes the review to be skipped.
+`--dry-run` still performs model review but does not publish or leave a marker.
+The workflow never automatically approves, requests changes, or merges a PR.
 
-추가 옵션은 `--include-drafts`, `--base-branch`, `--workspace-root`, `--model`,
-`--no-publish`, `--detach`입니다. 상세 입력은 [PR Review](docs/GITHUB-PR-REVIEW.md)에 있습니다.
+Additional options include `--include-drafts`, `--base-branch`, `--workspace-root`, `--model`,
+`--no-publish`, and `--detach`. See [PR Review](docs/GITHUB-PR-REVIEW.md) for detailed inputs.
 
-## 4. 리뷰 후 조치 실행
+## 4. Apply Review Findings
 
-기존 review 명령에 `--apply`와 `--policy`를 추가합니다.
+Add `--apply` and `--policy` to the review command.
 
 ```bash
-# Review → apply → 테스트 → 후보 patch 저장
+# Review → apply → test → save a candidate patch
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 \
   --apply --policy /absolute/operator/apply-policy.json
 
-# 정책과 검증 조건을 충족하면 PR 브랜치에 push
+# Push to the PR branch when policy and validation conditions are met
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 \
   --apply --policy /absolute/operator/apply-policy.json --apply-mode push
 
-# 다시 리뷰한 결과로 조치
+# Apply findings from a fresh review
 ./scripts/run.sh github-pr-review --repository owner/repo --pr 312 --force-review \
   --apply --policy /absolute/operator/apply-policy.json
 ```
 
-- 기본 모드는 `patch`입니다. `push`는 명시적으로 선택해야 합니다.
-- `--pr`로 하나의 PR을 지정해야 하며, `--publish-mode review`, `--force-review`, `--model`을 함께 사용할 수 있습니다.
-- `--dry-run`, `--no-publish`, `--detach` 및 PR 검색 옵션은 연결 실행에서 지원하지 않습니다.
-- Review ID와 원래 HEAD/base를 검증합니다. 부분 조치, 테스트 실패, HEAD/base 변경 시 push하지 않습니다.
-- 후보 patch와 결과는 `/tmp/cao-pr-apply/candidate-*`에 저장하고 checkout은 삭제합니다.
+- The default mode is `patch`. Select `push` explicitly to publish changes.
+- Specify one PR with `--pr`. You can also use `--publish-mode review`, `--force-review`, and `--model`.
+- `--dry-run`, `--no-publish`, `--detach`, and PR discovery options are unsupported for combined execution.
+- The coordinator verifies the review ID and original HEAD/base. Partial application, test failures, or HEAD/base changes prevent push.
+- Candidate patches and results are saved under `/tmp/cao-pr-apply/candidate-*`; checkouts are removed.
 
-### 중단된 연결 실행 재개
+### Resume an Interrupted Run
 
-실행 시 출력되는 `state_path`를 사용합니다. 기본 상태 디렉터리는
-`/tmp/cao-pr-review-apply`이며 상태 파일 권한은 `0600`입니다.
+Use the `state_path` printed when execution starts. The default state directory is
+`/tmp/cao-pr-review-apply`, and state files have permissions `0600`.
 
 ```bash
 ./scripts/run-review-apply.sh --resume /tmp/cao-pr-review-apply/CHAIN.json
 ```
 
-동일한 run ID를 조회해 이어갑니다. 실패·취소로 종결된 실행은 새 연결 실행으로 재시도합니다.
-개별 apply 및 세부 workspace 설정은 [Apply 가이드](workflows/github-pr-apply/README.md)를 참고하세요.
+The coordinator queries the same run IDs and continues execution.
+Retry terminal failed or cancelled runs by starting a new combined run.
+See the [Apply guide](workflows/github-pr-apply/README.md) for standalone apply and workspace settings.
 
-### GitHub Actions에서 실행
+### Run Through GitHub Actions
 
-[수동 Action](.github/workflows/pr-review-apply.yml)은 `self-hosted`, `linux`, `cao`
-label의 runner에서 동일한 `run.sh` 명령을 실행합니다.
-저장소 변수 `CAO_WORKFLOW_PROJECT_ROOT`와 `CAO_APPLY_POLICY_PATH`를 설정하고,
-관리 checkout과 설치 리소스를 Action의 commit SHA에 맞춰 준비해야 합니다.
+The [manual Action](.github/workflows/pr-review-apply.yml) runs the same `run.sh` command
+on a runner with the `self-hosted`, `linux`, and `cao` labels.
+Set repository variables `CAO_WORKFLOW_PROJECT_ROOT` and `CAO_APPLY_POLICY_PATH`.
+Prepare the manager checkout and installed resources to match the Action's commit SHA.
 
-## 리소스 관리
+## Resource Management
 
-아래 명령은 전체 리소스를 대상으로 합니다. 설치·갱신·삭제 명령 뒤에
-`github-pr-review` 또는 `github-pr-apply`를 지정하면 해당 workflow와 관련 profile만 관리합니다.
+The commands below target all resources. Add `github-pr-review` or `github-pr-apply`
+to an install, update, or uninstall command to manage only that workflow and its associated profiles.
 
 ```bash
 ./scripts/list.sh
@@ -133,38 +134,38 @@ label의 runner에서 동일한 `run.sh` 명령을 실행합니다.
 ./scripts/uninstall.sh --yes
 ```
 
-소유권과 SHA-256은 CAO 홈의 `cao-workflow-project-state.json`에 기록합니다.
-수정된 리소스의 삭제는 기본적으로 거부합니다. 이 프로젝트 소유임을 확인한 뒤
-`uninstall.sh --yes --force`를 사용하면 수정 여부 검사만 생략하며 소유권 검사는 유지합니다.
+Ownership and SHA-256 hashes are recorded in `cao-workflow-project-state.json` in CAO home.
+Removing modified resources is refused by default. After verifying project ownership,
+use `uninstall.sh --yes --force` to bypass the modification check. Ownership checks still apply.
 
-## 문제 해결
+## Troubleshooting
 
-| 증상 | 확인 사항 |
+| Symptom | What to Check |
 | --- | --- |
-| Codex profile 오류 | 두 profile을 서버와 실행 스크립트가 사용하는 `CODEX_HOME`에 복사 |
-| GitHub 인증 오류 | `gh` 인증 상태와 작업에 필요한 권한 확인 |
-| CAO 서버 연결 오류 | `cao-server` 실행 상태와 `CAO_API_PORT` 확인 |
-| `unmanaged` / `modified` | 배포 파일의 소유권과 Git 원본 확인 후 갱신 |
-| 모델 응답·컨텍스트 제한 오류 | [운영 가이드](docs/OPERATIONS.md)의 실행 조건과 제한 확인 |
+| Codex profile error | Copy both profiles into the `CODEX_HOME` used by the server and launcher scripts |
+| GitHub authentication error | Check `gh` authentication and permissions required for the operation |
+| CAO server connection error | Check that `cao-server` is running and verify `CAO_API_PORT` |
+| `unmanaged` / `modified` | Verify deployment ownership and Git sources before updating |
+| Model response or context limit error | Check execution requirements and limits in the [operations guide](docs/OPERATIONS.md) |
 
-CAO 단계는 고정된 shell no-op 입력 토큰과 JSON 응답을 사용합니다.
-이 보호를 유지하려면 서버의 메모리 주입 대상이 비어 있거나 메모리 주입이 꺼져 있어야 합니다.
-인증 정보와 개인 CAO 상태는 저장소에 저장하지 않습니다.
+CAO steps use fixed shell no-op input tokens and JSON responses.
+To preserve this protection, server memory injection must be disabled or its source memory must be empty.
+Do not store credentials or personal CAO state in this repository.
 
-## 저장소 구조와 문서
+## Repository Structure and Documentation
 
-| 경로 | 역할 |
+| Path | Purpose |
 | --- | --- |
-| `manifest.json` | 배포 리소스와 workflow 버전의 단일 목록 |
-| `agents/` | Agent Profile 원본 |
-| `workflows/` | CAO script workflow 원본 |
-| `config/` | Codex 설정과 입력·정책 예제 |
-| `scripts/` | 설치, 검증, 실행, 상태 조회, 삭제 |
-| `tests/` | 관리·리뷰·조치 테스트와 fixture |
-| `docs/` | 구조, 개발, 운영 및 설계 문서 |
+| `manifest.json` | Single inventory of deployment resources and workflow versions |
+| `agents/` | Agent Profile sources |
+| `workflows/` | CAO script workflow sources |
+| `config/` | Codex configuration and example inputs and policies |
+| `scripts/` | Installation, validation, execution, status checks, and removal |
+| `tests/` | Management, review, and apply tests and fixtures |
+| `docs/` | Architecture, development, operations, and design documentation |
 
-- [Architecture](docs/ARCHITECTURE.md): CAO 계약과 실행 구조
-- [Workflow Development](docs/WORKFLOW-DEVELOPMENT.md): workflow/profile 개발 규칙
-- [Operations](docs/OPERATIONS.md): 운영 설정, 재개 및 rollback
-- [PR Review](docs/GITHUB-PR-REVIEW.md): 리뷰 입력과 게시 정책
-- [Review → Apply 설계](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): 연결 실행과 검증 계약
+- [Architecture](docs/ARCHITECTURE.md): CAO contracts and execution structure
+- [Workflow Development](docs/WORKFLOW-DEVELOPMENT.md): Workflow and profile development rules
+- [Operations](docs/OPERATIONS.md): Operational setup, resume, and rollback
+- [PR Review](docs/GITHUB-PR-REVIEW.md): Review inputs and publication policy
+- [Review → Apply Design](docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md): Combined execution and validation contracts
