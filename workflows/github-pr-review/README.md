@@ -20,7 +20,8 @@ Commands below run from the repository root. Replace the repository and PR numbe
 3. Keep CAO memory injection disabled or empty. The model receives a fixed shell
    no-op token and reads bounded input from an owner-only file.
 4. Grant Contents/Pull requests/Issues read access and Pull requests write access
-   when publishing.
+   when publishing. Authenticate with `gh auth login` as the CAO account;
+   launcher tokens are not forwarded to CAO 2.5.0 workflow scripts.
 
 ```bash
 ./scripts/install.sh github-pr-review
@@ -65,8 +66,12 @@ when duplicate publication must be avoided across machines.
 | `--detach` | Submit and return a run ID without waiting |
 
 To apply findings after review, use `--apply --policy PATH` for one explicit PR.
-That coordinator publishes the review and has its own option restrictions; see
+The coordinator publishes the review and has its own option restrictions; see
 [PR apply](../github-pr-apply/README.md#review-and-apply-together).
+
+For automatic review/apply, use
+[polling operations](../../docs/GITHUB-POLLING-OPERATIONS.md). Disable competing
+automatic triggers for the same PRs before enabling polling.
 
 [config.example.json](config.example.json) illustrates direct CAO inputs; it is
 not automatically loaded. The workflow's `INPUTS` declaration is the runtime
@@ -82,8 +87,15 @@ cao workflow events RUN_ID --no-follow
 cao workflow result RUN_ID --json
 ```
 
-Inspect `output.results`, one entry per PR. Entries report the reviewed SHA,
-result, and timestamps; completed reviews also include findings/publication data.
+CAO 2.5.0's retained result omits the script's run-level `output`;
+`steps[].output` contains model step results, not the final publication result.
+For combined review/apply or polling, inspect the printed chain journal's
+`child_outputs[RUN_ID]` alongside CAO state. Standalone review has no chain
+journal fallback; preserve live script output and verify publication on GitHub
+when the final output is unavailable.
+
+When available, inspect the final output's `results`, one entry per PR. Entries
+report the reviewed SHA, result, and timestamps; completed reviews also include findings/publication data.
 New publication returns `review_id` and `review_url`. Dry-run and skipped results
 have no new review ID. Dry-run prints the proposed summary and inline comments
 in the execution output. No discovered PRs produces an empty results list.

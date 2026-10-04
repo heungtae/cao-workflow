@@ -49,6 +49,10 @@ make status
 Installation deploys `workflow.py` and the `exception-triager` agent profile.
 It does not install or configure the MCP provider.
 
+Use `gh auth login` as the CAO account, or configure the policy's private
+`github_token_file`. Launcher `GH_TOKEN`/`GITHUB_TOKEN` is not forwarded to
+CAO 2.5.0 workflow scripts.
+
 ## Run manually
 
 ```bash
@@ -98,8 +102,15 @@ cao workflow status RUN_ID
 cao workflow result RUN_ID --json
 ```
 
-Inspect `output.status` and every entry in `output.incidents`. Top-level
-`processed` does not mean every incident produced an Issue.
+CAO 2.5.0's retained result omits run-level `output`. This workflow
+and its submission launcher do not implement the PR chain's `child_outputs`
+fallback; the launcher can report `CAO output identity mismatch` after a
+completed run. Preserve the journal and any live script output, inspect retained
+workflow evidence and GitHub publication, and resolve the outcome manually
+before retrying. Model step output alone does not establish publication.
+
+When final workflow output is available, inspect `output.status` and every entry
+in `output.incidents`. Top-level `processed` does not mean every incident produced an Issue.
 
 | Per-incident status | Meaning / next action |
 | --- | --- |

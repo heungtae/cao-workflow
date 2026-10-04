@@ -39,7 +39,9 @@ the checkout; automatic services require operator setup.
 - CAO 2.5.0 or later (`cao`, `cao-server`), Codex CLI and Codex authentication.
   The integration was inspected against CAO 2.5.0; revalidate CAO upgrades.
 - `git`, `gh`, `jq`, and `tmux`.
-- GitHub authentication through `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`.
+- Authenticate the CAO account with `gh auth login`. CAO 2.5.0 does not forward
+  launcher `GH_TOKEN`/`GITHUB_TOKEN` to workflow scripts. Incident workflows can
+  instead use an operator-owned `github_token_file` in their policy.
   Grant Contents/Pull requests/Issues read access as needed, Pull requests write
   for reviews, Issues write for Issues/comments, and Contents write for pushes.
 
@@ -84,8 +86,8 @@ make doctor
 
 `make install` installs all four workflows and their profiles, validates before
 deployment, and skips identical resources. It does not configure authentication,
-policies, Docker images, or an MCP server. Complete your workflow's additional
-setup before running it.
+policies, Docker images, an MCP server, or the polling user services. Complete
+your workflow's additional setup before running it.
 
 To install only one workflow and its profiles, use
 `./scripts/install.sh WORKFLOW_NAME`, choosing a name from the table above.
@@ -163,7 +165,9 @@ Resource installation and workflow execution have separate status commands:
 | Recent executions and run IDs | `cao workflow runs --limit 20` |
 | One execution's state | `cao workflow status RUN_ID` |
 | Recorded events / live progress | `cao workflow events RUN_ID --no-follow` / `cao workflow events RUN_ID` |
-| Retained output and errors | `cao workflow result RUN_ID --json` |
+| Retained state, step outputs, and errors | `cao workflow result RUN_ID --json` |
+| Polling queue, attempts, and collection health | `python3 scripts/automation.py --config /absolute/automation.json status --json` |
+| Polling admission diagnostics | `python3 scripts/automation.py --config /absolute/automation.json doctor` |
 
 `make status` reports each workflow/profile as follows:
 
@@ -180,8 +184,19 @@ Resource installation and workflow execution have separate status commands:
 deployment ownership/hashes, and the CAO registry. It does not qualify MCP
 bindings, incident config, operator policies, or test images.
 
-A CAO state of `completed` means the script returned. Inspect `output` as well:
-PR workflows use `result` (review has a `results` array); incident workflows use
+The automation-specific `doctor` also checks the configured policy, test image,
+and owned PR deployments. See [polling operations](docs/GITHUB-POLLING-OPERATIONS.md).
+
+CAO 2.5.0's retained result endpoint returns state and `steps[].output`, but
+omits the script's run-level `output`. Combined PR runs and polling save that
+output in the printed chain journal's `child_outputs`, keyed by run ID; compare
+it with the matching CAO terminal state. Standalone PR runs and incident workflows
+do not provide that journal fallback. Preserve any live script output and
+retained artifacts; missing output requires manual investigation and must not
+be interpreted as publication success.
+
+A CAO state of `completed` means the script returned. When workflow output is
+available, PR workflows use `result` (review has a `results` array); incident workflows use
 `status`, including per-incident statuses. Partial, blocked, deferred, or
 pending-publication work can remain in a completed run.
 
@@ -190,6 +205,12 @@ or journal path and follow the workflow README's resume instructions.
 A lost connection does not prove the server-side run stopped.
 
 ## Update and uninstall
+
+For polling installations, stop the collector timer and Worker and reconcile
+submitted executions before changing dependencies. Follow
+[polling recovery and changes](docs/GITHUB-POLLING-OPERATIONS.md#recovery-and-changes);
+stopping the Worker does not cancel submitted CAO runs. Preserve queue, journals,
+and artifacts, and rerun the automation `doctor` before restarting services.
 
 After updating this Git checkout, run `make update`, then `make status`.
 For selected resources, use `./scripts/update.sh WORKFLOW_NAME` or
@@ -223,6 +244,8 @@ Start with `make status`, `make doctor`, and `cao workflow result RUN_ID --json`
 
 ## Further documentation
 
+- [Polling operations](docs/GITHUB-POLLING-OPERATIONS.md) and
+  [validation evidence](docs/GITHUB-POLLING-VALIDATION.md): queue, services, and recovery.
 - [Operations](docs/OPERATIONS.md): deployment, rollback, CAO upgrades, apply runner setup.
 - [Incident operations](docs/INCIDENT-WORKFLOWS.md): provider qualification, policy contracts, recovery.
 - [External MCP log server specification](docs/MCP-LOG-SERVER-SPEC.md): provider contract; server implementation and deployment are external.

@@ -57,6 +57,10 @@ make status
 Installation deploys `workflow.py` and the `issue-fixer` profile. The monitor need
 not be installed to run this workflow.
 
+Use `gh auth login` as the CAO account, or configure the policy's private
+`github_token_file`. Launcher `GH_TOKEN`/`GITHUB_TOKEN` is not forwarded to
+CAO 2.5.0 workflow scripts.
+
 ## Run
 
 ```bash
@@ -90,7 +94,15 @@ cao workflow status RUN_ID
 cao workflow result RUN_ID --json
 ```
 
-Inspect `output.status`, not only the CAO run state or launcher exit code:
+CAO 2.5.0's retained result omits run-level `output`. This workflow
+and its submission launcher do not implement the PR chain's `child_outputs`
+fallback; the launcher can report `CAO output identity mismatch` after a
+completed run. Preserve the journal and any live script output, inspect retained
+workflow evidence and GitHub publication, and resolve the outcome manually
+before retrying. Model step output alone does not establish publication.
+
+When final workflow output is available, inspect `output.status`, not only the
+CAO run state or launcher exit code:
 
 | Status | Meaning / next action |
 | --- | --- |

@@ -15,6 +15,8 @@ Commands below run from the repository root. Replace repository/PR values and pa
    review and apply Codex configs in the server/launcher's `CODEX_HOME`, with
    read-only sandbox and memory injection disabled or empty. Apply config also
    sets `shell_environment_policy.inherit=none`.
+   Authenticate with `gh auth login` as the CAO account; launcher tokens are
+   not forwarded to CAO 2.5.0 workflow scripts.
 2. Copy [apply-policy.example.json](../../config/apply-policy.example.json) to an
    absolute operator-controlled path outside model workspaces. Set mode `0600`
    and replace all placeholders. The launcher and CAO process must both read it.
@@ -97,7 +99,12 @@ cao workflow result RUN_ID --json
 ```
 
 CAO `completed` alone does not establish a successful application. Inspect the
-apply run's `output.result` and `output.apply_mode`:
+apply workflow's `result` and `apply_mode`. CAO 2.5.0's retained result
+omits run-level `output`; combined runs and polling retain it in
+`child_outputs[RUN_ID]` in the printed chain journal. Compare that output with
+the matching CAO terminal state. Standalone apply has no chain fallback; inspect
+live script output and retained candidate `result.json`, and verify any remote
+commit before retrying. Missing evidence does not establish a successful push.
 
 | Result | Meaning |
 | --- | --- |
@@ -122,8 +129,9 @@ For an interrupted combined run, use the exact printed state path:
 
 If the chain used a custom state root, supply the same `--state-root`. State files
 are owner-only (`0600`). Resume queries the recorded run IDs; policy/version
-changes reject old state. Failed or cancelled terminal runs require correcting
-the cause and starting a new chain. Standalone apply has no chain state; inspect
+changes block new execution steps; already submitted apply outcomes are
+reconciled using frozen evidence first. Resolve any publication intent before
+starting another chain after a failed or cancelled run. Standalone apply has no chain state; inspect
 its retained CAO result and artifacts before retrying, especially after a push.
 
 ## Troubleshooting
@@ -140,6 +148,15 @@ its retained CAO result and artifacts before retrying, especially after a push.
 Limits include 40 context files, 40 KB per file, 120 KB total model context,
 100 inline findings, 300 changed files, and a 2 MB patch. Exceeding them blocks apply.
 See [operations](../../docs/OPERATIONS.md) for cancellation and recovery details.
+
+## Automatic polling
+
+Follow [polling setup and recovery](../../docs/GITHUB-POLLING-OPERATIONS.md) for
+the separate collector, SQLite queue and single Worker. Automatic jobs use
+policy-authorized push mode and force a fresh review for each admitted identity.
+Disable competing automatic review/apply triggers for the same PRs. Before
+updating dependencies, stop the user services and resolve retained executions;
+stopping the Worker does not cancel submitted CAO runs.
 
 ## Manual GitHub Action
 
