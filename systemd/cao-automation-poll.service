@@ -1,0 +1,9 @@
+[Unit]
+Description=Collect GitHub PR revisions for CAO automation
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/cao-automation/environment
+ExecStart=/usr/bin/python3 ${CAO_AUTOMATION_CHECKOUT}/scripts/automation.py --config ${CAO_AUTOMATION_CONFIG} poll
+UMask=0077
+TimeoutStartSec=20min

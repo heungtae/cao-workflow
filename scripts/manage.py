@@ -176,9 +176,12 @@ def selected(manifest: dict, name: str | None) -> dict:
 def validate() -> dict:
     prerequisites()
     command(sys.executable, str(ROOT / 'scripts/build_incident_workflows.py'), '--check')
+    command(sys.executable, str(ROOT / 'scripts/build_pr_guards.py'), '--check')
     manifest = load_manifest()
     defaults = json.loads((ROOT / "config/defaults.json").read_text())
     validate_defaults(defaults)
+    import automation
+    automation.validate_configuration(json.loads((ROOT / 'config/automation.example.json').read_text()))
     repositories = json.loads((ROOT / "config/repositories.example.json").read_text()).get("repositories")
     if not isinstance(repositories, list) or any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repositories):
         raise ManagementError("Invalid repositories.example.json", 2)
@@ -441,6 +444,11 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--apply", action="store_true", help="Run review then apply for one PR")
     parser.add_argument("--expected-findings", type=int)
     parser.add_argument("--detach", action="store_true")
+    parser.add_argument('--state-root')
+    parser.add_argument('--chain-id')
+    parser.add_argument('--authorized-policy-path')
+    for field in ('head-sha', 'base-sha', 'policy-digest', 'resource-digest'):
+        parser.add_argument('--expected-' + field)
     args = parser.parse_args(argv)
     if args.apply:
         if args.workflow != 'github-pr-review' or not args.pr_number or args.pr_number <= 0 or not args.policy_path:
@@ -456,7 +464,15 @@ def run(argv: list[str]) -> None:
             cmd += ['--model', args.model]
         if args.force_review:
             cmd.append('--force-review')
+        for field in ('state_root', 'chain_id', 'authorized_policy_path', 'expected_head_sha', 'expected_base_sha',
+                      'expected_policy_digest', 'expected_resource_digest'):
+            value = getattr(args, field)
+            if value is not None:
+                cmd += ['--' + field.replace('_', '-'), value]
         os.execv(sys.executable, cmd)
+    if any(getattr(args, field) for field in ('state_root', 'chain_id', 'authorized_policy_path', 'expected_head_sha',
+                                             'expected_base_sha', 'expected_policy_digest', 'expected_resource_digest')):
+        raise ManagementError('Automation chain options require --apply', 3)
     if args.workflow == 'github-pr-review' and any((args.policy_path, args.apply_mode, args.head_sha,
                                                   args.review_id, args.expected_findings is not None)):
         raise ManagementError("Use --apply for review plus apply, or github-pr-apply for standalone apply", 3)

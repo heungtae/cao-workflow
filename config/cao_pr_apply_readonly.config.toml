@@ -2,6 +2,10 @@
 sandbox_mode = "read-only"
 approval_policy = "never"
 
+# Avoid an interactive first-run UI preference mutating the frozen service config.
+[tui]
+screen_reader_detection_done = true
+
 [shell_environment_policy]
 inherit = "none"
 

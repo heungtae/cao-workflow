@@ -1,4 +1,4 @@
-# github-pr-review v6
+# github-pr-review v7
 
 Review a selected PR or discover open PRs with Code, Security, and Test reviewers.
 The workflow publishes one GitHub `COMMENT` review with changed-line inline

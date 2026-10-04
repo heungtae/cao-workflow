@@ -19,6 +19,11 @@ import time
 from pathlib import Path
 
 import manage
+import pr_resources
+
+
+class TerminalFailure(RuntimeError):
+    pass
 
 
 def command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
@@ -53,7 +58,7 @@ def pages(repository: str, path: str) -> list[dict]:
 
 def private_root(path: str) -> Path:
     requested = Path(path)
-    if not requested.is_absolute() or requested.is_symlink():
+    if not requested.is_absolute() or any(p.is_symlink() for p in (requested, *requested.parents)):
         raise ValueError('State directory must be absolute and not a symlink')
     requested.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = requested.stat()
@@ -75,6 +80,24 @@ def load_state(path: Path) -> dict:
     return state
 
 
+def persist_state(journal, state):
+    """Serialize coordinator updates with child output/publication journal writes."""
+    fd = os.open(str(journal) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        info = os.fstat(stream.fileno())
+        if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError('Invalid execution journal lock')
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        if journal.exists():
+            saved = load_state(journal)
+            if saved['chain_id'] != state['chain_id']:
+                raise ValueError('Journal belongs to another chain')
+            for key in ('child_outputs', 'apply_publication'):
+                if key in saved:
+                    state[key] = saved[key]
+        manage.atomic_json(journal, state)
+
+
 def check_snapshot(pr: dict, request: dict) -> None:
     if (pr.get('number') != request['pr_number'] or pr.get('state') != 'open' or pr.get('draft')
             or pr.get('base', {}).get('repo', {}).get('full_name', '').lower() != request['repository'].lower()
@@ -94,6 +117,8 @@ def eligible_review(repository: str, number: int, sha: str, version: str, author
                if marker in (r.get('body') or '') and r.get('user', {}).get('login') in authors
                and f'<!-- cao-review-base {base_sha} -->' in (r.get('body') or '')
                and r.get('commit_id') == sha and r.get('state') == 'COMMENTED']
+    if rid is not None:
+        matches = [r for r in matches if r.get('id') == rid]
     if len(matches) != 1 or (rid is not None and matches[0].get('id') != rid):
         raise ValueError('Expected exactly one eligible owned review for the pinned HEAD')
     review = matches[0]
@@ -115,12 +140,31 @@ def workflow_result(run_id: str, *, missing_ok: bool = False) -> dict | None:
     return value
 
 
+def retained_stage_result(run_id, state, journal, *, missing_ok=False):
+    result = workflow_result(run_id, missing_ok=missing_ok)
+    if journal.exists():
+        saved = load_state(journal)
+        if saved['chain_id'] != state['chain_id'] or saved['request'] != state['request']:
+            raise ValueError('Execution journal changed identity')
+        for key in ('child_outputs', 'apply_publication'):
+            if key in saved:
+                state[key] = saved[key]
+        if result and not isinstance(result.get('output'), dict):
+            result = dict(result, output=saved.get('child_outputs', {}).get(run_id))
+        if result is None and (run_id in saved.get('child_outputs', {})
+                               or (run_id == saved.get('apply_run_id') and saved.get('apply_publication'))):
+            raise ValueError('Missing retained CAO evidence for a previously executed run')
+    if result and result.get('state') == 'completed' and not isinstance(result.get('output'), dict):
+        raise ValueError('Completed CAO execution lacks retained workflow output; reconcile manually')
+    return result
+
+
 def execute_stage(name: str, inputs: dict, state: dict, journal: Path, deployed: Path) -> dict:
     key = 'review_run_id' if name == 'github-pr-review' else 'apply_run_id'
     if not state.get(key):
         state[key] = state['chain_id'] + ('-review' if key == 'review_run_id' else '-apply')
         state['active_run_id'] = state[key]
-        manage.atomic_json(journal, state)
+        persist_state(journal, state)
         args = ['cao', 'workflow', 'run', str(deployed), '--detach', '--json', '--run-id', state[key]]
         for field, value in inputs.items():
             args += ['--input', f'{field}={value}']
@@ -130,25 +174,35 @@ def execute_stage(name: str, inputs: dict, state: dict, journal: Path, deployed:
     else:
         # A failed submission may never have reached the server. Query first and
         # resubmit the SAME explicit ID only on the CLI's confirmed unknown-run error.
-        prior = workflow_result(state[key], missing_ok=True)
+        prior = retained_stage_result(state[key], state, journal, missing_ok=True)
         if prior is None:
+            if state.get(key + '_acknowledged'):
+                raise ValueError('Previously acknowledged CAO run is missing; reconcile manually')
             args = ['cao', 'workflow', 'run', str(deployed), '--detach', '--json', '--run-id', state[key]]
             for field, value in inputs.items():
                 args += ['--input', f'{field}={value}']
             if json_command(args).get('run_id') != state[key]:
                 raise ValueError('Resubmission run ID mismatch')
+    if journal.exists():
+        saved = load_state(journal)
+        for field in ('child_outputs', 'apply_publication'):
+            if field in saved:
+                state[field] = saved[field]
+    state[key + '_acknowledged'] = True
     state['active_run_id'] = state[key]
-    manage.atomic_json(journal, state)
+    persist_state(journal, state)
     command(['cao', 'workflow', 'wait', state[key], '--json'], check=False)
-    result = workflow_result(state[key])
+    result = retained_stage_result(state[key], state, journal)
     if result.get('state') != 'completed' or not isinstance(result.get('output'), dict):
-        raise RuntimeError(f'{name} did not complete; inspect {state[key]}')
+        if result.get('state') in ('failed', 'cancelled'):
+            raise TerminalFailure(f'{name} terminated; inspect {state[key]}')
+        raise RuntimeError(f'{name} is unresolved; inspect {state[key]}')
     output = result['output']
     if (output.get('workflow') != name or output.get('repository', '').lower() != inputs['repository'].lower()
             or output.get('run_id') != state[key]):
         raise ValueError('Workflow output identity mismatch')
     state['active_run_id'] = None
-    manage.atomic_json(journal, state)
+    persist_state(journal, state)
     return output
 
 
@@ -176,7 +230,7 @@ def cancel_active(state: dict, journal: Path) -> None:
                 for cid in workers.stdout.split():
                     if re.fullmatch(r'[0-9a-f]{12,64}', cid):
                         command(['docker', 'rm', '-f', cid], check=False)
-    manage.atomic_json(journal, state)
+    persist_state(journal, state)
 
 
 def operator_policy(policy_path: str, repository: str) -> dict:
@@ -222,6 +276,12 @@ def preflight(request: dict) -> tuple[dict, dict[str, Path]]:
     # Avoid spending a review run before discovering unavailable test isolation.
     command(['docker', 'image', 'inspect', image])
     fingerprint = manage.digest(path)
+    if request.get('authorized_policy_path'):
+        operator_policy(request['authorized_policy_path'], request['repository'])
+        if manage.digest(Path(request['authorized_policy_path'])) != request['policy_digest']:
+            raise ValueError('Currently authorized policy changed')
+    if request.get('resource_digest') and pr_resources.fingerprint(pr_resources.identity()) != request['resource_digest']:
+        raise ValueError('PR workflow/profile/configuration resources changed')
     versions = {w['name']: w['version'] for w in manage.load_manifest()['workflows']
                 if w['name'] in ('github-pr-review', 'github-pr-apply')}
     if request.get('policy_digest') and request['policy_digest'] != fingerprint:
@@ -229,6 +289,11 @@ def preflight(request: dict) -> tuple[dict, dict[str, Path]]:
     if request.get('versions') and request['versions'] != versions:
         raise ValueError('Workflow versions changed; start a new chain')
     request.update(policy_digest=fingerprint, versions=versions)
+    if not request.get('resource_digest'):
+        resources = pr_resources.identity()
+        request.update(resources=resources, resource_digest=pr_resources.fingerprint(resources),
+                       guard_files=pr_resources.guard_files(),
+                       authorized_policy_path=request['policy_path'])
     return policy, deployed
 
 
@@ -242,6 +307,12 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
     review_inputs = {'repository': repo, 'pr_number': number, 'expected_head_sha': sha,
                      'expected_base_sha': request['base_sha'],
                      'publish_mode': 'review', 'workspace_root': request['review_workspace']}
+    expectations = {}
+    if request.get('resource_digest'):
+        expectations = {'execution_state_path': str(journal), 'expected_policy_digest': request['policy_digest'],
+                        'expected_resource_digest': request['resource_digest'],
+                        'authorized_policy_path': request['authorized_policy_path']}
+    review_inputs.update(expectations)
     if request.get('force_review'):
         review_inputs['force_review'] = True
     if request.get('model'):
@@ -258,12 +329,14 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
         raise ValueError('Dry-run review cannot start apply')
     review = eligible_review(repo, number, sha, reviewed['version'], policy['review_authors'], row.get('review_id'), request['base_sha'])
     rid = review['id']
+    state['review_id'] = rid
+    persist_state(journal, state)
     count = len(pages(repo, f'pulls/{number}/reviews/{rid}/comments'))
     if row.get('result') == 'completed' and row.get('findings') != count:
         raise ValueError('Published comment count differs from the review findings')
     if count == 0:
         state.update(result='skipped', reason='no findings', review_id=rid)
-        manage.atomic_json(journal, state)
+        persist_state(journal, state)
         return state
     if not state.get('apply_run_id'):
         check_snapshot(api(repo, f'pulls/{number}'), request)
@@ -271,6 +344,7 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
                     'base_sha': request['base_sha'],
                     'expected_findings': count, 'policy_path': request['policy_path'],
                     'apply_mode': request['apply_mode'], 'workspace_root': request['apply_workspace']}
+    apply_inputs.update(expectations)
     if request.get('model'):
         apply_inputs['model'] = request['model']
     applied = execute_stage('github-pr-apply', apply_inputs, state, journal, deployed['github-pr-apply'])
@@ -280,8 +354,97 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
             or applied.get('result') not in ('applied', 'partial', 'skipped')):
         raise ValueError('Apply output identity/status mismatch')
     state.update(result=applied['result'], review_id=rid, apply_result=applied)
-    manage.atomic_json(journal, state)
+    persist_state(journal, state)
     return state
+
+
+def verified_apply_output(state, output):
+    request = state['request']
+    if (not isinstance(output, dict) or output.get('workflow') != 'github-pr-apply'
+            or output.get('version') != request['versions']['github-pr-apply']
+            or output.get('run_id') != state['apply_run_id']
+            or output.get('repository', '').lower() != request['repository'].lower()
+            or output.get('pr') != request['pr_number'] or output.get('head_sha') != request['head_sha']
+            or output.get('apply_mode') != request['apply_mode'] or type(output.get('review_id')) is not int
+            or output['review_id'] <= 0
+            or (state.get('review_id') and state['review_id'] != output['review_id'])):
+        raise ValueError('Retained apply output identity mismatch')
+    if output.get('commit_sha'):
+        if not re.fullmatch(r'[0-9a-f]{40}', output['commit_sha']):
+            raise ValueError('Invalid output commit')
+        commit = api(request['repository'], 'commits/' + output['commit_sha'])
+        lines = commit.get('commit', {}).get('message', '').splitlines()
+        if (commit.get('sha') != output['commit_sha'] or [p.get('sha') for p in commit.get('parents', [])] != [request['head_sha']]
+                or 'CAO-Apply-Run: ' + state['apply_run_id'] not in lines
+                or 'CAO-Apply-Key: ' + output.get('apply_key', '') not in lines
+                or 'CAO-Review-ID: ' + str(output['review_id']) not in lines):
+            raise ValueError('Retained output commit parent mismatch')
+    return output
+
+
+def run_retained(state, journal):
+    """Reconcile submitted IDs before configuration admission or new side effects."""
+    try:
+        if state.get('apply_run_id'):
+            prior = retained_stage_result(state['apply_run_id'], state, journal, missing_ok=True)
+            if prior is None:
+                # Lost acknowledgement is resubmitted only under unchanged admission.
+                if state.get('result') == 'failed' or state.get('apply_run_id_acknowledged'):
+                    return {'state': 'blocked', 'reason': 'missing_retained_apply', 'execution': state}
+            elif prior.get('state') not in ('completed', 'failed', 'cancelled'):
+                command(['cao', 'workflow', 'wait', state['apply_run_id'], '--json'], check=False)
+                prior = retained_stage_result(state['apply_run_id'], state, journal)
+            if prior:
+                if prior.get('state') == 'completed':
+                    output = verified_apply_output(state, prior.get('output'))
+                    if output.get('result') not in ('applied', 'skipped', 'partial'):
+                        raise TerminalFailure('Retained apply failed')
+                    state.update(result=output['result'], apply_result=output, active_run_id=None)
+                    if output['result'] == 'partial':
+                        state['retry_safe'] = not state.get('apply_publication')
+                    persist_state(journal, state)
+                    return {'state': 'failed' if output['result'] == 'partial' else ('skipped' if output['result'] == 'skipped' else 'completed'),
+                            'reason': 'partial_application' if output['result'] == 'partial' else '', 'execution': state}
+                if prior.get('state') in ('failed', 'cancelled'):
+                    # Publication intent survives a process death or a lost push response.
+                    state = load_state(journal)
+                    intent = state.get('apply_publication')
+                    if intent:
+                        request = state['request']
+                        latest = api(request['repository'], f"pulls/{request['pr_number']}")
+                        output = verified_apply_output(state, intent)
+                        if latest['head']['sha'] == output['commit_sha']:
+                            state.update(result='applied', apply_result=output, active_run_id=None, recovered_push=True)
+                            persist_state(journal, state)
+                            return {'state': 'completed', 'execution': state}
+                        # An unchanged remote cannot prove a timed-out push will never land.
+                        return {'state': 'blocked', 'reason': 'unresolved_push_intent', 'execution': state}
+                    check_snapshot(api(state['request']['repository'], f"pulls/{state['request']['pr_number']}"), state['request'])
+                    state.update(result='failed', retry_safe=True, active_run_id=None)
+                    persist_state(journal, state)
+                    return {'state': 'failed', 'reason': 'terminal_apply_failure', 'execution': state}
+        # Completed review-only journals may resume apply, but only with current admission.
+        if state.get('review_run_id'):
+            prior = retained_stage_result(state['review_run_id'], state, journal, missing_ok=True)
+            if prior and prior.get('state') in ('failed', 'cancelled'):
+                check_snapshot(api(state['request']['repository'], f"pulls/{state['request']['pr_number']}"), state['request'])
+                state.update(result='failed', retry_safe=True)
+                persist_state(journal, state)
+                return {'state': 'failed', 'reason': 'terminal_review_failure', 'execution': state}
+        policy, deployed = preflight(state['request'])
+        result = orchestrate(state, journal, policy, deployed)
+        return {'state': 'failed' if result['result'] == 'partial' else ('skipped' if result['result'] == 'skipped' else 'completed'),
+                'reason': 'partial_application' if result['result'] == 'partial' else '', 'execution': result}
+    except TerminalFailure:
+        if state.get('apply_publication'):
+            return run_retained(state, journal)
+        state.update(result='failed', retry_safe=False, active_run_id=None)
+        persist_state(journal, state)
+        return {'state': 'failed', 'reason': 'terminal_workflow_failure', 'execution': state}
+    except ValueError:
+        return {'state': 'blocked', 'reason': 'admission_or_evidence_mismatch', 'execution': state}
+    except (RuntimeError, OSError, json.JSONDecodeError):
+        return {'state': 'reconciling', 'reason': 'execution_transport_unresolved', 'execution': state}
 
 
 def main() -> int:
@@ -296,10 +459,16 @@ def main() -> int:
     parser.add_argument('--review-workspace', default='/tmp/cao-pr-review')
     parser.add_argument('--apply-workspace', default='/tmp/cao-pr-apply')
     parser.add_argument('--resume', type=Path)
+    parser.add_argument('--chain-id')
+    for field in ('head-sha', 'base-sha', 'policy-digest', 'resource-digest'):
+        parser.add_argument('--expected-' + field)
+    parser.add_argument('--authorized-policy-path')
     args = parser.parse_args()
     root = private_root(args.state_root)
     if args.resume:
-        if any((args.repository, args.pr, args.policy, args.model, args.force_review)) or args.apply_mode != 'patch':
+        if any((args.repository, args.pr, args.policy, args.model, args.force_review, args.chain_id,
+                args.expected_head_sha, args.expected_base_sha, args.expected_policy_digest,
+                args.expected_resource_digest, args.authorized_policy_path)) or args.apply_mode != 'patch':
             raise ValueError('Resume uses the retained request; do not override its inputs')
         journal, state = args.resume.resolve(), load_state(args.resume)
         if journal.parent != root:
@@ -314,11 +483,29 @@ def main() -> int:
                    'head_ref': pr['head']['ref'], 'head_repository': pr['head']['repo']['full_name'],
                    'base_sha': pr['base']['sha'], 'review_workspace': args.review_workspace,
                    'apply_workspace': args.apply_workspace}
+        for field in ('head_sha', 'base_sha'):
+            expected = getattr(args, 'expected_' + field)
+            if expected and expected != request[field]:
+                raise ValueError('PR differs from expected ' + field)
+        if args.expected_policy_digest:
+            request['policy_digest'] = args.expected_policy_digest
+        if args.expected_resource_digest or args.expected_policy_digest or args.authorized_policy_path:
+            resources = pr_resources.identity()
+            resource_digest = pr_resources.fingerprint(resources)
+            if args.expected_resource_digest and resource_digest != args.expected_resource_digest:
+                raise ValueError('Resource expectation mismatch')
+            request.update(resources=resources, resource_digest=resource_digest,
+                           guard_files=pr_resources.guard_files(),
+                           authorized_policy_path=args.authorized_policy_path or args.policy,
+                           policy_digest=args.expected_policy_digest or manage.digest(Path(args.policy)))
         check_snapshot(pr, request)
-        chain_id = secrets.token_hex(16)
+        chain_id = args.chain_id or secrets.token_hex(16)
+        if not re.fullmatch(r'[0-9a-f]{32}', chain_id):
+            raise ValueError('Chain ID must be 32 lowercase hexadecimal characters')
         state = {'schema_version': 1, 'chain_id': chain_id, 'request': request, 'result': 'running'}
         journal = root / f'{chain_id}.json'
-    policy, deployed = preflight(state['request'])
+        if journal.exists():
+            raise ValueError('Chain state already exists; resume it')
     lock_key = hashlib.sha256(f"{state['request']['repository'].lower()}#{state['request']['pr_number']}".encode()).hexdigest()
     fd = os.open(root / f'{lock_key}.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as lock:
@@ -326,16 +513,23 @@ def main() -> int:
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ValueError('Invalid chain lock ownership')
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        manage.atomic_json(journal, state)
+        if not args.resume:
+            # Reserve the caller-assigned ID exclusively, including other PR locks.
+            fd = os.open(journal, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(state, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+        persist_state(journal, state)
         print(json.dumps({'state_path': str(journal), 'chain_id': state['chain_id']}), flush=True)
         def interrupt(signum, frame):
             raise InterruptedError('Chain interrupted')
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            result = orchestrate(state, journal, policy, deployed)
+            result = run_retained(state, journal)
             print(json.dumps(result, ensure_ascii=False))
-            return 0 if result['result'] in ('applied', 'skipped') else 1
+            return 0 if result['state'] in ('completed', 'skipped') else 1
         except InterruptedError:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -343,7 +537,7 @@ def main() -> int:
             raise
         except Exception:
             state.update(result='failed')
-            manage.atomic_json(journal, state)
+            persist_state(journal, state)
             raise
 
 

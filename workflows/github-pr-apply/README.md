@@ -1,6 +1,6 @@
-# github-pr-apply v1
+# github-pr-apply v2
 
-Apply an authenticated CAO v6 review at its original PR HEAD and base. The default
+Apply an authenticated CAO v7 review at its original PR HEAD and base. The default
 `patch` mode retains a tested candidate. Explicit `push` mode updates the PR
 branch only after policy checks, complete outcomes, and passing isolated tests.
 
@@ -79,7 +79,7 @@ must match trusted paths in the Codex configs. Defaults are
   --policy /absolute/operator/apply-policy.json --apply-mode patch
 ```
 
-Use the original full HEAD SHA and GitHub review ID from a published v6 review.
+Use the original full HEAD SHA and GitHub review ID from a published v7 review.
 The workflow authenticates its author, markers, base snapshot, and inline findings
 again. Optional standalone flags are `--apply-mode push`, `--workspace-root PATH`,
 `--model MODEL`, `--expected-findings N`, and `--detach`. Review-only flags do not
@@ -131,7 +131,7 @@ its retained CAO result and artifacts before retrying, especially after a push.
 | Symptom | Action |
 | --- | --- |
 | Missing/modified/outdated deployment | Inspect `make status`; update owned resources after resolving modifications |
-| Review cannot be authenticated | Verify review ID, author allowlist, v6 marker, original HEAD and base; create a fresh review for a new snapshot |
+| Review cannot be authenticated | Verify review ID, author allowlist, v7 marker, original HEAD and base; create a fresh review for a new snapshot |
 | Docker/image/test failure | Check same-host Docker access, immutable preloaded image, offline dependencies, and non-root test permissions |
 | Path/context rejection | Match editable paths and explicitly configure related context/new files |
 | Push denied | Check branch allowlist; forks, protected/base/default branches, partial outcomes, failed tests, and stale HEAD/base block push |

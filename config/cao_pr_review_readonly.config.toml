@@ -2,5 +2,9 @@
 sandbox_mode = "read-only"
 approval_policy = "never"
 
+# Avoid an interactive first-run UI preference mutating the frozen service config.
+[tui]
+screen_reader_detection_done = true
+
 [projects."/tmp/cao-pr-review"]
 trust_level = "trusted"

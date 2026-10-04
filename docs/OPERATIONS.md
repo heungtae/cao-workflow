@@ -117,3 +117,7 @@ process with the coordinator, preserving exit codes and cancellation signals.
 See [Incident workflow operations](INCIDENT-WORKFLOWS.md) for external MCP provider
 bindings, independent workflow installation, private policies, manual/cron
 execution, and durable publication recovery.
+## GitHub polling automation
+
+See [polling setup, services and recovery](GITHUB-POLLING-OPERATIONS.md) for the
+repository-managed collector/Worker CLI and systemd user templates.

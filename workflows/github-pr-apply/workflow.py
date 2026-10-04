@@ -31,10 +31,14 @@ INPUTS = {
     "apply_mode": {"type": "string", "required": False, "default": "patch"},
     "workspace_root": {"type": "string", "required": False, "default": "/tmp/cao-pr-apply"},
     "model": {"type": "string", "required": False},
+    "execution_state_path": {"type": "string", "required": False},
+    "expected_policy_digest": {"type": "string", "required": False},
+    "expected_resource_digest": {"type": "string", "required": False},
+    "authorized_policy_path": {"type": "string", "required": False},
 }
 WORKFLOW = "github-pr-apply"
-VERSION = "v1"
-REVIEW_VERSION = "v6"
+VERSION = "v2"
+REVIEW_VERSION = "v7"
 MAX_CONTEXT = 120000
 MAX_FILE = 40000
 MAX_DIFF = 2000000
@@ -62,7 +66,8 @@ def run(args: list[str], *, cwd: Path | None = None, timeout: int = 180, quiet: 
 
 
 def api(repository: str, path: str) -> object:
-    return json.loads(run(["gh", "api", f"repos/{repository}/{path}"]))
+    endpoint = f"repos/{repository}" + (f"/{path}" if path else '')
+    return json.loads(run(["gh", "api", endpoint]))
 
 
 def pages(repository: str, path: str, limit: int = 300) -> list[dict]:
@@ -180,7 +185,15 @@ def validate_review(repository: str, number: int, sha: str, review_id: int,
         raise ValueError("Review author/identity/HEAD/marker is not eligible for apply")
     if not validate_locations:
         return review, []
-    comments = pages(repository, f"pulls/{number}/reviews/{review_id}/comments", 100)
+    # The review-specific REST response can omit line/side. Use its IDs to
+    # establish membership, then get modern location metadata from the PR list.
+    original = pages(repository, f"pulls/{number}/reviews/{review_id}/comments", 100)
+    if any(type(c.get('id')) is not int or c['id'] <= 0 for c in original):
+        raise ValueError('Invalid review-specific comment identity')
+    original_ids = {c['id'] for c in original}
+    comments = [c for c in pages(repository, f"pulls/{number}/comments") if c.get('id') in original_ids]
+    if len(original_ids) != len(original) or len(comments) != len(original) or {c.get('id') for c in comments} != original_ids:
+        raise ValueError('Review comment membership/location evidence is incomplete')
     files = pages(repository, f"pulls/{number}/files")
     allowed = {f["filename"]: changed_lines(f.get("patch") or "") for f in files}
     if expected_findings is not None and (type(expected_findings) is not int or expected_findings != len(comments)):
@@ -444,6 +457,7 @@ def push_gate(repository: str, pr: dict, policy: dict) -> str:
 
 
 def publish(repository: str, pr: dict, source: Path, work: Path, inputs: dict, policy: dict, key: str) -> str:
+    automation_guard(inputs)
     latest = api(repository, f"pulls/{inputs['pr_number']}")
     check_pr(latest, repository, inputs['pr_number'], inputs['head_sha'])
     branch = push_gate(repository, latest, policy)
@@ -468,6 +482,12 @@ def publish(repository: str, pr: dict, source: Path, work: Path, inputs: dict, p
     commit = git(source, "rev-parse", "HEAD").strip()
     if git(source, 'show', '-s', '--format=%P', commit).strip() != inputs['head_sha']:
         raise ValueError('Published commit must have exactly the reviewed HEAD as its parent')
+    automation_guard(inputs)
+    automation_journal_update(inputs, 'apply_publication', {
+        'workflow': WORKFLOW, 'version': VERSION, 'repository': repository,
+        'pr': inputs['pr_number'], 'head_sha': inputs['head_sha'],
+        'review_id': inputs['review_id'], 'run_id': run_id, 'result': 'applied',
+        'apply_mode': 'push', 'apply_key': key, 'commit_sha': commit})
     git(source, "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
         "push", f"--force-with-lease=refs/heads/{branch}:{inputs['head_sha']}", remote, f"HEAD:refs/heads/{branch}")
     verified = git(source, "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
@@ -480,6 +500,7 @@ def publish(repository: str, pr: dict, source: Path, work: Path, inputs: dict, p
 def process(inputs: dict) -> dict:
     if os.getuid() == 0:
         raise ValueError('Apply must run as a non-root service user')
+    automation_guard(inputs)
     repository, number, sha, rid = (inputs[k] for k in ('repository', 'pr_number', 'head_sha', 'review_id'))
     if (not isinstance(repository, str) or not REPO_RE.fullmatch(repository) or '..' in repository
             or type(number) is not int or number <= 0 or type(rid) is not int or rid <= 0
@@ -566,16 +587,130 @@ def process(inputs: dict) -> dict:
             shutil.rmtree(source, ignore_errors=True)
 
 
+# BEGIN GENERATED PR GUARD -- edit workflows/_pr/guard.py
+def automation_guard(inputs):
+    """Optional manual-compatible gate; private journal is the trust boundary."""
+    import hashlib
+    path = inputs.get('execution_state_path')
+    fields = ('expected_policy_digest', 'expected_resource_digest', 'authorized_policy_path')
+    if not path:
+        if any(inputs.get(k) for k in fields):
+            raise ValueError('Automation expectations require an execution journal')
+        return
+    def private_file(value):
+        p = Path(value)
+        if not p.is_absolute() or any(x.is_symlink() for x in (p, *p.parents)):
+            raise ValueError('Automation file path must be absolute without symlinks')
+        info = p.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError('Automation journal/policy must be owned mode 0600')
+        return p
+    journal = json.loads(private_file(path).read_text())
+    request = journal['request']
+    stage = 'review' if WORKFLOW == 'github-pr-review' else 'apply'
+    if (journal.get('schema_version') != 1 or not re.fullmatch(r'[0-9a-f]{32}', journal.get('chain_id', ''))
+            or os.environ.get('CAO_WORKFLOW_RUN_ID') != journal['chain_id'] + '-' + stage
+            or inputs.get('repository', '').lower() != request['repository'].lower()
+            or inputs.get('pr_number') != request['pr_number']
+            or inputs.get('expected_head_sha', inputs.get('head_sha')) != request['head_sha']
+            or inputs.get('expected_base_sha', inputs.get('base_sha')) != request['base_sha']):
+        raise ValueError('Automation journal execution identity mismatch')
+    for field, recorded in [('expected_policy_digest', 'policy_digest'), ('expected_resource_digest', 'resource_digest')]:
+        if not inputs.get(field) or inputs[field] != request.get(recorded):
+            raise ValueError('Automation expectation differs from frozen execution')
+    if inputs.get('authorized_policy_path') != request.get('authorized_policy_path'):
+        raise ValueError('Automation authorized policy path mismatch')
+    if request.get('automation_config_path'):
+        config = json.loads(private_file(request['automation_config_path']).read_text())
+        current = next((b for b in config.get('bindings', []) if b.get('id') == request['binding']['id']), None)
+        source = next((s for s in config.get('sources', []) if s.get('id') == request['binding']['source_id']), None)
+        if (current != request['binding'] or not source or source.get('repository', '').lower() != request['repository']
+                or source.get('type') != 'github_pull_requests' or config.get('state_root') != request['automation_state_root']):
+            raise ValueError('Automation Binding authorization changed')
+    for value in (request['policy_path'], request['authorized_policy_path']):
+        if hashlib.sha256(private_file(value).read_bytes()).hexdigest() != request['policy_digest']:
+            raise ValueError('Authorized/frozen operator policy changed')
+    if stage == 'apply' and inputs.get('policy_path') != request['policy_path']:
+        raise ValueError('Apply must use the frozen policy')
+    resources = request['resources']
+    actual = hashlib.sha256(json.dumps(resources, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    if actual != request['resource_digest'] or str(Path(__file__).resolve()) not in request['guard_files']:
+        raise ValueError('Automation resource identity mismatch')
+    for value, expected in request['guard_files'].items():
+        p = Path(value)
+        if any(x.is_symlink() for x in (p, *p.parents)) or hashlib.sha256(p.read_bytes()).hexdigest() != expected:
+            raise ValueError('PR dependency changed since admission')
+
+
+def automation_record_output(inputs, output):
+    automation_journal_update(inputs, 'child_outputs', output)
+
+
+def automation_journal_update(inputs, kind, output):
+    """Serialize workflow-owned evidence with coordinator journal updates."""
+    path = inputs.get('execution_state_path')
+    if not path:
+        return
+    if kind not in ('child_outputs', 'apply_publication'):
+        raise ValueError('Invalid workflow journal field')
+    path = Path(path)
+    info = path.lstat()
+    if (not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents))
+            or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
+        raise ValueError('Invalid output journal')
+    import fcntl
+    import tempfile
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        info = os.fstat(lock.fileno())
+        if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError('Invalid journal lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        journal = json.loads(path.read_text())
+        rid = os.environ.get('CAO_WORKFLOW_RUN_ID')
+        suffix = '-review' if WORKFLOW == 'github-pr-review' else '-apply'
+        if (rid != journal['chain_id'] + suffix or output.get('run_id') != rid
+                or output.get('workflow') != WORKFLOW
+                or output.get('repository') != journal['request']['repository']):
+            raise ValueError('Output journal execution identity mismatch')
+        if kind == 'child_outputs':
+            outputs = journal.setdefault('child_outputs', {})
+            if rid in outputs and outputs[rid] != output:
+                raise ValueError('A terminal child output cannot be overwritten')
+            outputs[rid] = output
+        else:
+            if journal.get(kind) and journal[kind] != output:
+                raise ValueError('Publication intent cannot be replaced')
+            journal[kind] = output
+        fd, filename = tempfile.mkstemp(prefix='.child-evidence-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(journal, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(filename, path)
+        finally:
+            if os.path.exists(filename):
+                os.unlink(filename)
+# END GENERATED PR GUARD
+
+
 def main() -> None:
     def interrupt(signum, frame):
         raise InterruptedError('Apply interrupted')
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    inputs = get_inputs()
     try:
-        emit_output(process(get_inputs()))
+        output = process(inputs)
+        automation_record_output(inputs, output)
+        emit_output(output)
     except Exception as exc:
-        emit_output(getattr(exc, 'result', {"workflow": WORKFLOW, "version": VERSION, "result": "failed",
-                    "run_id": os.environ.get('CAO_WORKFLOW_RUN_ID', ''), "error": type(exc).__name__}))
+        output = getattr(exc, 'result', {"workflow": WORKFLOW, "version": VERSION, "result": "failed",
+                                       "run_id": os.environ.get('CAO_WORKFLOW_RUN_ID', ''), "error": type(exc).__name__})
+        if inputs.get('execution_state_path') and output.get('repository'):
+            automation_record_output(inputs, output)
+        emit_output(output)
         raise RuntimeError("Apply failed; inspect retained result and CAO journal") from None
 
 

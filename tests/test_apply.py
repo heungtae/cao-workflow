@@ -61,9 +61,14 @@ def init_source(path):
 
 
 class ApplyTests(unittest.TestCase):
+    def test_repository_metadata_endpoint_has_no_trailing_slash(self):
+        with patch.object(apply, 'run', return_value='{"default_branch":"main"}') as run:
+            self.assertEqual('main', apply.api('owner/repo', '')['default_branch'])
+        self.assertEqual(['gh', 'api', 'repos/owner/repo'], run.call_args.args[0])
+
     def test_review_rejects_forged_author_marker_and_comment(self):
         files = [{'filename': 'src/app.py', 'patch': '@@ -1 +1 @@\n-old\n+value = 1\n'}]
-        with patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[comment()], files]):
+        with patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[comment()], [comment()], files]):
             self.assertEqual(34, apply.validate_review('owner/repo', 1, SHA, 12, policy(), 1, BASE)[1][0]['id'])
         for key, value in [('commit_id', 'c' * 40), ('body', 'fake'), ('user', {'login': 'attacker'})]:
             bad = dict(review(), **{key: value})
@@ -72,9 +77,18 @@ class ApplyTests(unittest.TestCase):
                     apply.validate_review('owner/repo', 1, SHA, 12, policy(), base_sha=BASE)
                 pages.assert_not_called()
         for key, value in [('in_reply_to_id', 1), ('line', 2), ('id', True), ('user', {'login': 'attacker'}), ('pull_request_review_id', 13)]:
-            with self.subTest(comment_key=key), patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[dict(comment(), **{key: value})], files]):
+            with self.subTest(comment_key=key), patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[dict(comment(), **{key: value})], [dict(comment(), **{key: value})], files]):
                 with self.assertRaises(ValueError):
                     apply.validate_review('owner/repo', 1, SHA, 12, policy(), 1, BASE)
+
+    def test_review_comment_ids_join_modern_locations_and_fail_on_missing_evidence(self):
+        files = [{'filename': 'src/app.py', 'patch': '@@ -1 +1 @@\n-old\n+value = 1\n'}]
+        legacy = {k: v for k, v in comment().items() if k not in ('line', 'side')}
+        with patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[legacy], [comment(), comment(999)], files]):
+            self.assertEqual(34, apply.validate_review('owner/repo', 1, SHA, 12, policy(), 1, BASE)[1][0]['id'])
+        for modern in ([], [comment(), comment()], [comment(999)]):
+            with patch.object(apply, 'api', return_value=review()), patch.object(apply, 'pages', side_effect=[[legacy], modern]), self.assertRaises(ValueError):
+                apply.validate_review('owner/repo', 1, SHA, 12, policy(), 1, BASE)
 
     def test_ambiguous_or_unsupported_edits_do_not_mutate_any_file(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,0 +1,14 @@
+[Unit]
+Description=Execute and reconcile durable CAO automation jobs
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/cao-automation/environment
+ExecStart=/usr/bin/python3 ${CAO_AUTOMATION_CHECKOUT}/scripts/automation.py --config ${CAO_AUTOMATION_CONFIG} worker
+UMask=0077
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=default.target

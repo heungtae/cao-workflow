@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "state_root": "/home/operator/.local/state/cao-automation",
+  "sources": [
+    {
+      "id": "project-prs",
+      "type": "github_pull_requests",
+      "repository": "owner/repository",
+      "interval_seconds": 180,
+      "max_pages": 100
+    }
+  ],
+  "bindings": [
+    {
+      "id": "project-review-apply",
+      "source_id": "project-prs",
+      "kind": "pull_request_revision",
+      "handler": "pr_review_apply",
+      "policy_path": "/home/operator/.config/cao-automation/apply-policy.json"
+    }
+  ]
+}

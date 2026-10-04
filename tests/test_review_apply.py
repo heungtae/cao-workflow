@@ -20,18 +20,18 @@ def state():
         'repository': 'owner/repo', 'pr_number': 1, 'head_sha': SHA, 'base_sha': BASE,
         'head_ref': 'fix/one', 'head_repository': 'owner/repo', 'policy_path': '/operator/policy.json',
         'apply_mode': 'patch', 'model': None, 'review_workspace': '/tmp/review', 'apply_workspace': '/tmp/apply',
-        'versions': {'github-pr-review': 'v6', 'github-pr-apply': 'v1'}}}
+        'versions': {'github-pr-review': 'v7', 'github-pr-apply': 'v2'}}}
 
 
 def review_output(result='completed', count=1):
-    return {'workflow': 'github-pr-review', 'version': 'v6', 'repository': 'owner/repo',
+    return {'workflow': 'github-pr-review', 'version': 'v7', 'repository': 'owner/repo',
             'results': [{'pr': 1, 'head_sha': SHA, 'base_sha': BASE, 'result': result,
                          'findings': count, 'review_id': 12 if result == 'completed' else None,
                          'publish_result': 'url'}]}
 
 
 def apply_output():
-    return {'workflow': 'github-pr-apply', 'version': 'v1', 'repository': 'owner/repo',
+    return {'workflow': 'github-pr-apply', 'version': 'v2', 'repository': 'owner/repo',
             'pr': 1, 'head_sha': SHA, 'review_id': 12, 'apply_mode': 'patch', 'result': 'applied'}
 
 
@@ -83,7 +83,7 @@ class ChainTests(unittest.TestCase):
     def test_ambiguous_or_wrong_author_reviews_are_not_selected(self):
         for rows in ([review(), review()], [dict(review(), user={'login': 'attacker'})], [dict(review(), commit_id='c' * 40)]):
             with self.subTest(rows=rows), patch.object(chain, 'pages', return_value=rows), self.assertRaises(ValueError):
-                chain.eligible_review('owner/repo', 1, SHA, 'v6', ['review-bot'], None, BASE)
+                chain.eligible_review('owner/repo', 1, SHA, 'v7', ['review-bot'], None, BASE)
 
     def test_changed_base_or_branch_invalidates_snapshot(self):
         for field in ('base', 'head'):
@@ -122,6 +122,12 @@ class ChainTests(unittest.TestCase):
             with patch.object(chain, 'workflow_result', return_value=result), patch.object(chain, 'command'), patch.object(chain, 'json_command') as submit:
                 chain.execute_stage('github-pr-apply', {'repository': 'owner/repo'}, saved, journal, Path('/apply'))
                 submit.assert_not_called()
+            with patch.object(chain, 'workflow_result', return_value=None), self.assertRaises(ValueError):
+                chain.execute_stage('github-pr-apply', {'repository': 'owner/repo'}, saved, journal, Path('/apply'))
+            # A different scenario: the first submission lost its acknowledgement.
+            saved = state()
+            saved['apply_run_id'] = rid
+            chain.manage.atomic_json(journal, saved)
             with patch.object(chain, 'workflow_result', side_effect=[None, result]), patch.object(chain, 'command'), patch.object(chain, 'json_command', return_value={'run_id': rid}) as submit:
                 chain.execute_stage('github-pr-apply', {'repository': 'owner/repo'}, saved, journal, Path('/apply'))
                 self.assertEqual(1, submit.call_count)

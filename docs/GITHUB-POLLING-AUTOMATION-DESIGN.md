@@ -1,7 +1,11 @@
 # Extensible Local GitHub Polling Automation
 
-Status: **Proposed — design only**. The existing PR review/apply workflows are
-available; the polling integration described here is not implemented.
+Status: **Implemented — local and live PR validation passed**. The initial PR Source,
+Bindings, SQLite job store, single Worker, review/apply Handler, CLI, and systemd
+user templates are implemented. See
+[setup and recovery](GITHUB-POLLING-OPERATIONS.md). Future Issue/MCP adapters
+remain extension contracts, not production implementations.
+See [validation evidence](GITHUB-POLLING-VALIDATION.md).
 
 ## 1. Goal and Scope
 
@@ -166,9 +170,8 @@ execution; recheck the currently authorized policy before new writes. Changes
 stop publication rather than silently changing the execution contract. Preserve
 existing manual defaults and the 32-character hexadecimal chain-ID format.
 
-Narrow the existing coordinator's version comparison to `github-pr-review`,
-`github-pr-apply`, and their actual profiles/Codex configurations. Its current
-all-manifest comparison must be changed as part of implementation: registering
+The coordinator's version/resource comparison covers `github-pr-review`,
+`github-pr-apply`, and their actual profiles/Codex configurations. Registering
 an unrelated workflow must not invalidate an existing PR chain. A relevant
 workflow/profile/configuration change still rejects new execution steps. Preserve
 remote-outcome reconciliation with frozen state even when configuration changes
@@ -283,3 +286,33 @@ Defaults:
 - Terminal failure retries: explicit operator action only.
 - Out of scope: automatic approval/merge and implementation of Issue development
   or log-monitoring workflows.
+
+## 6. Implementation Map
+
+| Resource | Implementation |
+| --- | --- |
+| `scripts/automation.py` | Registered Source/Handler interfaces, PR collection, SQLite jobs/attempts, Worker, CLI |
+| `scripts/pr_resources.py` | PR-only dependency identity and trusted deployment paths |
+| `scripts/review_apply.py` | Assigned chain IDs, expected inputs, retained-ID reconciliation and serialized journal updates |
+| `workflows/_pr/guard.py` | Child admission/publication gates and durable workflow output/push evidence |
+| `scripts/build_pr_guards.py` | Shared gate embedded into the two manifest-owned standalone PR workflows |
+| `config/automation.example.json` | Source/Binding connection example; not a deployment inventory |
+| `systemd/` | Separate user collection service/timer and long-running Worker service |
+| `tests/test_automation.py` | Collection, deduplication, atomic claim, recovery, policy/dependency change and extension contracts |
+
+CAO 2.5.0's retained `GET /workflows/runs/{id}/result` omits run-level script
+output. The child therefore records its final output in the private chain
+journal before emitting it. The coordinator joins that output with CAO's retained
+terminal state and run ID. Missing output is blocked rather than inferred from
+model step output or a commit marker. Workflow and coordinator journal updates
+share a file lock so acknowledgements cannot discard child evidence.
+
+The PR review Workflow is v7 and apply is v2. Automatic jobs force a new review
+for each admitted job identity; queue uniqueness controls repetition. A published
+review ID selects that exact authenticated review even when an earlier job used
+the same version and HEAD/base. Manual force-review defaults remain unchanged.
+
+GitHub's review-specific comment response can omit `line`/`side`. Apply joins its
+verified comment IDs to the full PR comment response, then retains all original
+author, review-ID, SHA and changed-line checks. Missing or duplicate membership
+evidence rejects application.

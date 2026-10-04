@@ -3,7 +3,7 @@
   "workflows": [
     {
       "name": "github-pr-review",
-      "version": "v6",
+      "version": "v7",
       "source": "workflows/github-pr-review/workflow.py",
       "agents": [
         "pr-code-reviewer",
@@ -15,7 +15,7 @@
     },
     {
       "name": "github-pr-apply",
-      "version": "v1",
+      "version": "v2",
       "source": "workflows/github-pr-apply/workflow.py",
       "agents": [
         "pr-review-applier"

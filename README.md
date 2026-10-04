@@ -15,8 +15,8 @@ Their linked READMEs cover configuration, options, results, and recovery.
 
 | Workflow | Use it to | Default GitHub effect | Additional setup |
 | --- | --- | --- | --- |
-| [github-pr-review v6](workflows/github-pr-review/README.md) | Review one PR or discover open PRs | Publish a `COMMENT` review with inline findings | Review Codex config |
-| [github-pr-apply v1](workflows/github-pr-apply/README.md) | Apply a review, standalone or after review | Save a tested patch; push requires `--apply-mode push` | Apply Codex config, policy, Docker/test image |
+| [github-pr-review v7](workflows/github-pr-review/README.md) | Review one PR or discover open PRs | Publish a `COMMENT` review with inline findings | Review Codex config |
+| [github-pr-apply v2](workflows/github-pr-apply/README.md) | Apply a review, standalone or after review | Save a tested patch; push requires `--apply-mode push` | Apply Codex config, policy, Docker/test image |
 | [mcp-exception-issue v1](workflows/mcp-exception-issue/README.md) | Analyze MCP exceptions against deployed source | Create or reuse evidence-supported Issues | Incident Codex config, policy, external MCP provider |
 | [github-issue-fix v1](workflows/github-issue-fix/README.md) | Fix a manually selected open Issue | Push a new Issue branch and post a result comment | Incident Codex config, policy, Docker/test image; MCP for incident evidence |
 
@@ -24,6 +24,12 @@ PR review and apply can run together through a resumable coordinator. The two
 incident workflows run independently; neither invokes the other. Models review
 code and propose edits through read-only profiles. Deterministic workflow code
 handles file changes and GitHub publication.
+
+For periodic local PR review and policy-authorized correction/push, use the
+[GitHub polling setup and recovery guide](docs/GITHUB-POLLING-OPERATIONS.md).
+It provides a separate collector, durable SQLite queue, single Worker and
+systemd user service templates. Production configuration/state live outside
+the checkout; automatic services require operator setup.
 
 ## Setup and installation
 

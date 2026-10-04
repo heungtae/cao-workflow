@@ -1,7 +1,7 @@
 # GitHub PR Review → Apply Workflow Design
 
-Status: **Implemented — local validation**. `github-pr-review` v6,
-`github-pr-apply` v1, the coordinator, and a manual GitHub Action are implemented.
+Status: **Implemented — local validation**. `github-pr-review` v7,
+`github-pr-apply` v2, the coordinator, and a manual GitHub Action are implemented.
 Operational validation combining model execution, GitHub review publication, and
 push against an actual target PR has not been performed.
 
@@ -77,7 +77,7 @@ manager revision and never loads Action or workflow code from the PR branch.
 | Apply input | `repository`, `pr_number`, original `head_sha`, `base_sha`, `review_id`, `apply_mode`, `policy_path` | Refetch review and inline comments through GitHub API; never infer IDs from URLs or model output |
 | Apply result | CAO run ID, original HEAD, review ID, state, changed files, check results, candidate patch path, optional new commit SHA | Fail on missing or inconsistent results |
 
-In `github-pr-review` v6, `publish()` returns the integer `id` and URL from the
+In `github-pr-review` v7, `publish()` returns the integer `id` and URL from the
 GitHub POST response as `review_id` and `review_url`. The existing `publish_result`
 URL is retained. Output includes base SHA as well as HEAD, and publication includes
 a separate base marker. A changed base therefore triggers a new review even when
@@ -185,7 +185,7 @@ These failures do not modify review comments or select an arbitrary alternative 
 
 | File | Implementation |
 | --- | --- |
-| `workflows/github-pr-review/workflow.py` | v6 typed review ID, HEAD/base snapshot, base marker |
+| `workflows/github-pr-review/workflow.py` | v7 typed review ID, HEAD/base snapshot, base marker |
 | `workflows/github-pr-apply/workflow.py` | Review ownership and changed-line validation, exact replacement, candidate patch, isolated tests, optional push |
 | `agents/pr-review-applier.md` | Separate read-only edit proposal profile |
 | `scripts/manage.py`, `scripts/review_apply.py`, `scripts/run-review-apply.sh` | Shared `run.sh --apply` entry point, PR serialization, durable run IDs, two-stage execution, resume and cancellation |
