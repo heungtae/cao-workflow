@@ -1,6 +1,6 @@
 # MCP Exception Logs to GitHub Issue Workflow Design
 
-Status: Initial implementation delivered as v1. See
+Status: Initial implementation delivered as v2. See
 [incident operations](INCIDENT-WORKFLOWS.md) for supported configuration,
 qualification requirements, and execution limits. Live external-provider/model/
 GitHub qualification remains environment-dependent.
@@ -45,8 +45,7 @@ flowchart TD
 
 Use the inspected CAO 2.5.0 script-tier contract: a self-contained Python workflow
 with static `WORKFLOW`, `VERSION`, and `INPUTS`, and the `cao_workflow` shim's
-`get_inputs()`, `step()`, and `emit_output()` functions. The proposed initial
-version is `v1`.
+`get_inputs()`, `step()`, and `emit_output()` functions. The current version is `v2`.
 
 Register the workflow and its dedicated `exception-triager` profile in
 `manifest.json`. Deploy through the existing ownership-checked management
@@ -414,6 +413,15 @@ CAO script completion alone does not establish successful Issue publication.
 - Validate client-side contract fixtures against the shared provider specification.
   Live MCP qualification uses an externally supplied test server; this project
   does not implement or install a server to satisfy that prerequisite.
+
+## Logging and requirement traceability
+
+The implementation saves final output before emitting it and joins private
+workflow evidence with retained CAO state. Results without matching evidence
+block resume; stage/attempt/test diagnostics remain owner-only. Current v2
+regression, section outcomes, multiline relationships and provenance contracts
+are documented in [workflow traceability](WORKFLOW-TRACEABILITY.md), together
+with requirement IDs and implementation/test evidence.
 
 ## References
 

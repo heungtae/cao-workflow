@@ -1,6 +1,6 @@
 # Extensible Local GitHub Polling Automation
 
-Status: **Implemented — local and live PR validation passed**. The initial PR Source,
+Status: **Implemented — local validation; prior v7/v2 live PR evidence recorded**. The initial PR Source,
 Bindings, SQLite job store, single Worker, review/apply Handler, CLI, and systemd
 user templates are implemented. See
 [setup and recovery](GITHUB-POLLING-OPERATIONS.md). Future Issue/MCP adapters
@@ -307,7 +307,7 @@ terminal state and run ID. Missing output is blocked rather than inferred from
 model step output or a commit marker. Workflow and coordinator journal updates
 share a file lock so acknowledgements cannot discard child evidence.
 
-The PR review Workflow is v7 and apply is v2. Automatic jobs force a new review
+The PR review Workflow is v8 and apply is v3. Automatic jobs force a new review
 for each admitted job identity; queue uniqueness controls repetition. A published
 review ID selects that exact authenticated review even when an earlier job used
 the same version and HEAD/base. Manual force-review defaults remain unchanged.

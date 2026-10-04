@@ -53,6 +53,7 @@ def issue():
 
 def proposal():
     return {'decision': 'fix', 'reason': 'Correct sum', 'regression_scenarios': ['sum is 2'],
+            'requirement_outcomes': [{'requirement_id': key, 'status': 'addressed', 'reason': 'Correct value', 'edit_paths': ['src/app.py'], 'test_paths': ['tests/test_app.py']} for key in ('title', 'body')],
             'edits': [{'path': 'src/app.py', 'old': 'value = 1', 'new': 'value = 2'},
                       {'path': 'tests/test_app.py', 'old': 'assert value == 1', 'new': 'assert value == 2'}]}
 
@@ -307,7 +308,7 @@ class FixTests(unittest.TestCase):
             root = Path(directory)
             policy = {'repository': 'owner/repo', 'state_root': directory, 'workspace_root': str(root / 'workspace'),
                       'source_paths': ['src/app.py', 'tests/test_app.py'], 'editable_paths': ['src/**', 'tests/**'],
-                      'regression_test_paths': ['tests/**'], 'allow_code_issues': True,
+                      'regression_test_paths': ['tests/**'], 'allow_code_issues': True, 'regression_strategy': 'alternative', 'regression_reason': 'Controlled orchestration fixture',
                       'git_author_name': 'Bot', 'git_author_email': 'bot@example.invalid'}
             inputs = {'repository': 'owner/repo', 'issue_number': 1, 'apply_mode': 'push',
                       'execution_state_path': str(root / 'execution.json'), 'expected_policy_digest': 'p', 'expected_resource_digest': 'r'}
@@ -356,6 +357,13 @@ class FixTests(unittest.TestCase):
                     self.assertEqual(1, model.call_count)
                     self.assertEqual(1, remote['pushes'])
                     self.assertEqual(1, len(remote['comments']))
+                    message = subprocess.check_output(['git', '-C', str(Path(result['artifact_path']) / 'source'),
+                                                       'log', '-1', '--format=%B'], text=True)
+                    self.assertIn('CAO-Base: ' + base, message)
+                    self.assertIn('CAO-Execution: ' + result['execution_key'], message)
+                    self.assertIn('CAO-Run: ', message)
+                    self.assertIn('CAO-Patch: ' + result['patch_digest'], message)
+                    self.assertIn('Execution:', remote['comments'][0]['body'])
 
     def test_all_edits_validated_before_mutation_and_regression_required(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -395,12 +403,12 @@ class FixTests(unittest.TestCase):
                 self.assertIn('--pull=never', argv)
                 mount = argv[argv.index('--mount') + 1]
                 self.assertIn('test-source', mount)
-                self.assertFalse((work / 'test-source/.git').exists())
+                self.assertFalse((work / 'test-source-candidate/.git').exists())
                 self.assertNotIn('GH_TOKEN', ' '.join(argv))
-                self.assertNotIn('env', kwargs)
-                (work / 'test-source/src/app.py').write_text('tampered')
-                return ''
-            with patch.object(fix, 'command', side_effect=command), patch.object(fix.subprocess, 'run'):
+                self.assertNotIn('GH_TOKEN', kwargs['env'])
+                (work / 'test-source-candidate/src/app.py').write_text('tampered')
+                return {'result': 'passed', 'exit_code': 0, 'timeout': False, 'stdout': '', 'stderr': ''}
+            with patch.object(fix, 'diag_test_command', side_effect=command), patch.object(fix.subprocess, 'run'):
                 self.assertEqual('passed', fix.test_candidate(source, work, policy)[0]['result'])
             self.assertEqual('value = 1\n', (source / 'src/app.py').read_text())
 
@@ -410,7 +418,7 @@ class FixTests(unittest.TestCase):
             workspace = root / 'workspace'
             policy = {'repository': 'owner/repo', 'state_root': directory, 'workspace_root': str(workspace),
                       'source_paths': ['src/app.py', 'tests/test_app.py'], 'editable_paths': ['src/**', 'tests/**'],
-                      'regression_test_paths': ['tests/**'], 'allow_code_issues': True}
+                      'regression_test_paths': ['tests/**'], 'allow_code_issues': True, 'regression_strategy': 'alternative', 'regression_reason': 'Controlled orchestration fixture'}
             inputs = {'repository': 'owner/repo', 'issue_number': 1, 'apply_mode': 'patch',
                       'execution_state_path': str(root / 'execution.json'), 'expected_policy_digest': 'p', 'expected_resource_digest': 'r'}
             def checkout(repo, sha, work, policy):

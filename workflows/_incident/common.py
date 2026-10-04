@@ -118,8 +118,13 @@ def command(argv, cwd=None, env=None, timeout=180):
                 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0'}
     if env:
         safe_env.update(env)
-    result = subprocess.run(argv, cwd=cwd, env=safe_env, capture_output=True, text=True, timeout=timeout)
+    try:
+        result = subprocess.run(argv, cwd=cwd, env=safe_env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        diag_command_failure(argv[0], 'TimeoutExpired', stdout=exc.stdout, stderr=exc.stderr)
+        raise
     if result.returncode:
+        diag_command_failure(argv[0], 'CommandFailed', result.returncode, result.stdout, result.stderr)
         raise Blocked(f'{argv[0]} failed (exit {result.returncode}); private output omitted')
     return result.stdout
 
@@ -130,7 +135,8 @@ def credentials(policy):
 
 
 def api(repo, path, policy, method='GET', payload=None):
-    args = ['gh', 'api', '--method', method, f'repos/{repo}/{path}']
+    endpoint = f'repos/{repo}' + ('/' + path if path else '')
+    args = ['gh', 'api', '--method', method, endpoint]
     if payload is not None:
         # Private body file avoids command-line source/Issue text and shell interpretation.
         with tempfile.NamedTemporaryFile(mode='w', prefix='cao-api-', delete=False) as stream:
@@ -189,6 +195,7 @@ def resource_digest(workflow_path, profile_path, config_path):
 
 
 def admission(inputs, agent):
+    diag_event('stage_started', stage='admission')
     if os.getuid() == 0:
         raise Blocked('Use a non-root workflow service user')
     policy = load_policy(inputs)
@@ -207,13 +214,17 @@ def admission(inputs, agent):
     # CAO profiles must disable persisted memory injection.
     if 'codexProfile: cao_incident_readonly' not in Path(journal['profile_path']).read_text():
         raise Blocked('Unexpected model profile')
-    base_url = os.environ.get('CAO_WORKFLOW_BASE_URL')
-    if not base_url:
+    base_url = os.environ.get('CAO_API_BASE_URL')
+    if not base_url or not base_url.startswith(('http://', 'https://')):
         raise Blocked('CAO workflow server identity missing')
     with urlopen(base_url.rstrip('/') + '/settings/memory', timeout=10) as response:
         settings = json.load(response)
     if settings.get('enabled') is not False:
         raise Blocked('Disable CAO server memory injection for incident workflows')
+    if _DIAG:
+        _DIAG['patterns'] = policy.get('redact_patterns', [])
+    diag_event('stage_completed', stage='admission', policy_digest=inputs.get('expected_policy_digest'),
+               resource_digest=inputs.get('expected_resource_digest'))
     return policy
 
 
@@ -254,8 +265,10 @@ def model(work, agent, task, step_id):
     token = 'CAO_INCIDENT_INPUT_' + secrets.token_hex(16)
     path = carrier / (token + '.json')
     atomic(path, task)
+    actual_step_id = step_id + '-' + digest(task)[:16]
     try:
-        result = step('codex', agent, ': ' + token, step_id=step_id + '-' + digest(task)[:16],
+        diag_event('stage_started', stage='model', step_id=actual_step_id, input_digest=digest(task))
+        result = step('codex', agent, ': ' + token, step_id=actual_step_id,
                       recovery='manual', timeout=900, working_directory=str(work))
         raw = str(result.output).strip()
         matches = list(re.finditer(r'(?m)^• (?=\{\s*")', raw))
@@ -269,7 +282,11 @@ def model(work, agent, task, step_id):
             value = json.loads(raw)
         if not isinstance(value, dict):
             raise Blocked('Model must return one JSON object')
+        diag_event('stage_completed', stage='model', step_id=actual_step_id, input_digest=digest(task))
         return redact(value)
+    except Exception as exc:
+        diag_event('stage_failed', stage='model', step_id=actual_step_id, error_type=type(exc).__name__, reason=diag_clean(str(exc)))
+        raise
     finally:
         path.unlink(missing_ok=True)
 
@@ -362,6 +379,12 @@ def validate_page(payload, request):
         for key in ('severity', 'stack_trace', 'trace_id', 'request_id', 'instance_id', 'deployment_sha', 'deployment_ref'):
             if key in record and (not isinstance(record[key], str) or (key != 'stack_trace' and not record[key])):
                 raise Blocked('Invalid optional MCP record metadata')
+        group_fields = ('exception_group_id', 'exception_sequence', 'exception_group_size')
+        if any(k in record for k in group_fields):
+            if (not isinstance(record.get('exception_group_id'), str) or not record['exception_group_id']
+                    or type(record.get('exception_sequence')) is not int or type(record.get('exception_group_size')) is not int
+                    or not 0 <= record['exception_sequence'] < record['exception_group_size'] <= 1000):
+                raise Blocked('Invalid optional exception grouping metadata')
     return payload
 
 
@@ -512,16 +535,23 @@ def evidence(record, scope, policy, minutes, cutoff):
 
 def finish(inputs, result):
     result.update(workflow=WORKFLOW, version=VERSION, repository=inputs.get('repository'),
-                  run_id=os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'))
+                  run_id=_DIAG.get('run_id', os.environ.get('CAO_WORKFLOW_RUN_ID', 'local')))
+    result = diag_result(result)
+    diag_journal_result(inputs, result)
     emit_output(result)
 
 
 def main():
     inputs = get_inputs()
+    diag_init(inputs)
     try:
         result = process(inputs)
-    except Blocked:
-        result = {'status': 'blocked', 'reason': 'Admission, evidence or publication gate blocked; inspect private execution state'}
-    except Exception:
-        result = {'status': 'failed', 'reason': 'Execution failed; no fresh retry authorized'}
+    except Blocked as exc:
+        result = {'status': 'blocked', 'reason_code': 'gate_blocked', 'reason': diag_clean(str(exc)),
+                  'failure_stage': _DIAG.get('stage', 'admission'), 'error_type': type(exc).__name__}
+        diag_event('stage_failed', **result)
+    except Exception as exc:
+        result = {'status': 'failed', 'reason_code': 'execution_failed', 'reason': diag_clean(str(exc)),
+                  'failure_stage': _DIAG.get('stage', 'execution'), 'error_type': type(exc).__name__}
+        diag_event('stage_failed', **result)
     finish(inputs, result)

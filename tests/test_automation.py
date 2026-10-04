@@ -34,8 +34,8 @@ class AutomationTests(unittest.TestCase):
         self.save_config()
         self.store = auto.Store(self.config['state_root'])
         self.addCleanup(self.store.close)
-        self.resource_patch = patch.object(pr_resources, 'identity', return_value=[{'kind': 'workflows', 'name': 'github-pr-review', 'version': 'v7', 'sha256': 'review'},
-                                                                                  {'kind': 'workflows', 'name': 'github-pr-apply', 'version': 'v2', 'sha256': 'apply'}])
+        self.resource_patch = patch.object(pr_resources, 'identity', return_value=[{'kind': 'workflows', 'name': 'github-pr-review', 'version': 'v8', 'sha256': 'review'},
+                                                                                  {'kind': 'workflows', 'name': 'github-pr-apply', 'version': 'v3', 'sha256': 'apply'}])
         self.resource_patch.start()
         self.addCleanup(self.resource_patch.stop)
         for name, value in [('deployed_workflow', Path('/owned/deployed')), ('codex_review_profile_ok', True), ('codex_apply_profile_ok', True)]:
@@ -403,7 +403,7 @@ class ExecutionGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             saved, path, inputs, resource, current = self.journal(Path(directory))
             saved['apply_run_id'] = saved['chain_id'] + '-apply'
-            output = {'workflow': 'github-pr-apply', 'version': 'v2', 'repository': 'owner/repo', 'pr': 1,
+            output = {'workflow': 'github-pr-apply', 'version': 'v3', 'repository': 'owner/repo', 'pr': 1,
                       'head_sha': SHA, 'review_id': 12, 'apply_mode': 'patch', 'run_id': saved['apply_run_id'], 'result': 'applied'}
             with patch.object(chain, 'workflow_result', return_value={'state': 'completed', 'output': output}), patch.object(chain, 'preflight', side_effect=AssertionError('must reconcile first')):
                 self.assertEqual('completed', chain.run_retained(saved, path)['state'])
@@ -413,7 +413,7 @@ class ExecutionGateTests(unittest.TestCase):
             saved, path, inputs, resource, current = self.journal(Path(directory))
             saved['request']['apply_mode'] = 'push'
             saved['apply_run_id'] = saved['chain_id'] + '-apply'
-            saved['apply_publication'] = {'workflow': 'github-pr-apply', 'version': 'v2', 'repository': 'owner/repo', 'pr': 1,
+            saved['apply_publication'] = {'workflow': 'github-pr-apply', 'version': 'v3', 'repository': 'owner/repo', 'pr': 1,
                                          'head_sha': SHA, 'review_id': 12, 'apply_mode': 'push', 'run_id': saved['apply_run_id'],
                                          'result': 'applied', 'commit_sha': 'c' * 40, 'apply_key': 'key'}
             auto.manage.atomic_json(path, saved)
@@ -435,7 +435,7 @@ class ExecutionGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             saved, path, inputs, resource, current = self.journal(Path(directory))
             rid = saved['chain_id'] + '-review'
-            output = {'workflow': 'github-pr-review', 'run_id': rid, 'repository': 'owner/repo', 'version': 'v7', 'results': []}
+            output = {'workflow': 'github-pr-review', 'run_id': rid, 'repository': 'owner/repo', 'version': 'v8', 'results': []}
             with patch.dict(os.environ, CAO_WORKFLOW_RUN_ID=rid):
                 workflow.automation_record_output(inputs, output)
             with patch.object(chain, 'workflow_result', return_value={'run_id': rid, 'state': 'completed', 'steps': []}):
@@ -449,7 +449,7 @@ class ExecutionGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             saved, path, inputs, resource, current = self.journal(Path(directory))
             rid = saved['chain_id'] + '-review'
-            output = {'workflow': 'github-pr-review', 'run_id': rid, 'repository': 'owner/repo', 'version': 'v7', 'results': []}
+            output = {'workflow': 'github-pr-review', 'run_id': rid, 'repository': 'owner/repo', 'version': 'v8', 'results': []}
             with patch.dict(os.environ, CAO_WORKFLOW_RUN_ID=rid):
                 workflow.automation_record_output(inputs, output)
             saved['active_run_id'] = None

@@ -3,7 +3,7 @@
   "workflows": [
     {
       "name": "github-pr-review",
-      "version": "v7",
+      "version": "v8",
       "source": "workflows/github-pr-review/workflow.py",
       "agents": [
         "pr-code-reviewer",
@@ -15,7 +15,7 @@
     },
     {
       "name": "github-pr-apply",
-      "version": "v2",
+      "version": "v3",
       "source": "workflows/github-pr-apply/workflow.py",
       "agents": [
         "pr-review-applier"
@@ -23,7 +23,7 @@
     },
     {
       "name": "mcp-exception-issue",
-      "version": "v1",
+      "version": "v2",
       "source": "workflows/mcp-exception-issue/workflow.py",
       "agents": [
         "exception-triager"
@@ -31,7 +31,7 @@
     },
     {
       "name": "github-issue-fix",
-      "version": "v1",
+      "version": "v2",
       "source": "workflows/github-issue-fix/workflow.py",
       "agents": [
         "issue-fixer"

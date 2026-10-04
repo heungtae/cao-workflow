@@ -92,7 +92,7 @@ def persist_state(journal, state):
             saved = load_state(journal)
             if saved['chain_id'] != state['chain_id']:
                 raise ValueError('Journal belongs to another chain')
-            for key in ('child_outputs', 'apply_publication'):
+            for key in ('child_outputs', 'child_output_history', 'apply_publication'):
                 if key in saved:
                     state[key] = saved[key]
         manage.atomic_json(journal, state)
@@ -307,6 +307,8 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
     review_inputs = {'repository': repo, 'pr_number': number, 'expected_head_sha': sha,
                      'expected_base_sha': request['base_sha'],
                      'publish_mode': 'review', 'workspace_root': request['review_workspace']}
+    if request.get('diagnostics_root'):
+        review_inputs['diagnostics_root'] = request['diagnostics_root']
     expectations = {}
     if request.get('resource_digest'):
         expectations = {'execution_state_path': str(journal), 'expected_policy_digest': request['policy_digest'],
@@ -345,6 +347,8 @@ def orchestrate(state: dict, journal: Path, policy: dict, deployed: dict) -> dic
                     'expected_findings': count, 'policy_path': request['policy_path'],
                     'apply_mode': request['apply_mode'], 'workspace_root': request['apply_workspace']}
     apply_inputs.update(expectations)
+    if request.get('diagnostics_root'):
+        apply_inputs['diagnostics_root'] = request['diagnostics_root']
     if request.get('model'):
         apply_inputs['model'] = request['model']
     applied = execute_stage('github-pr-apply', apply_inputs, state, journal, deployed['github-pr-apply'])
@@ -427,6 +431,15 @@ def run_retained(state, journal):
         if state.get('review_run_id'):
             prior = retained_stage_result(state['review_run_id'], state, journal, missing_ok=True)
             if prior and prior.get('state') in ('failed', 'cancelled'):
+                evidence_root = Path(state['request'].get('diagnostics_root') or journal.parent / 'run-evidence')
+                directory = evidence_root / state['review_run_id']
+                if directory.exists():
+                    for intent_path in directory.glob('review-*.publication.json'):
+                        intent = json.loads(intent_path.read_text())
+                        if intent.get('status') == 'sending':
+                            state.update(result='blocked', retry_safe=False)
+                            persist_state(journal, state)
+                            return {'state': 'blocked', 'reason': 'review_publication_unresolved', 'execution': state}
                 check_snapshot(api(state['request']['repository'], f"pulls/{state['request']['pr_number']}"), state['request'])
                 state.update(result='failed', retry_safe=True)
                 persist_state(journal, state)
@@ -463,10 +476,11 @@ def main() -> int:
     for field in ('head-sha', 'base-sha', 'policy-digest', 'resource-digest'):
         parser.add_argument('--expected-' + field)
     parser.add_argument('--authorized-policy-path')
+    parser.add_argument('--diagnostics-root')
     args = parser.parse_args()
     root = private_root(args.state_root)
     if args.resume:
-        if any((args.repository, args.pr, args.policy, args.model, args.force_review, args.chain_id,
+        if any((args.repository, args.pr, args.policy, args.model, args.force_review, args.chain_id, args.diagnostics_root,
                 args.expected_head_sha, args.expected_base_sha, args.expected_policy_digest,
                 args.expected_resource_digest, args.authorized_policy_path)) or args.apply_mode != 'patch':
             raise ValueError('Resume uses the retained request; do not override its inputs')
@@ -483,6 +497,8 @@ def main() -> int:
                    'head_ref': pr['head']['ref'], 'head_repository': pr['head']['repo']['full_name'],
                    'base_sha': pr['base']['sha'], 'review_workspace': args.review_workspace,
                    'apply_workspace': args.apply_workspace}
+        if args.diagnostics_root:
+            request['diagnostics_root'] = args.diagnostics_root
         for field in ('head_sha', 'base_sha'):
             expected = getattr(args, 'expected_' + field)
             if expected and expected != request[field]:
@@ -521,7 +537,8 @@ def main() -> int:
                 stream.flush()
                 os.fsync(stream.fileno())
         persist_state(journal, state)
-        print(json.dumps({'state_path': str(journal), 'chain_id': state['chain_id']}), flush=True)
+        print(json.dumps({'state_path': str(journal), 'chain_id': state['chain_id'],
+                          'evidence_root': state['request'].get('diagnostics_root') or str(journal.parent / 'run-evidence')}), flush=True)
         def interrupt(signum, frame):
             raise InterruptedError('Chain interrupted')
         signal.signal(signal.SIGTERM, interrupt)

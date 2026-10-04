@@ -1,4 +1,4 @@
-# github-pr-review v7
+# github-pr-review v8
 
 Review a selected PR or discover open PRs with Code, Security, and Test reviewers.
 The workflow publishes one GitHub `COMMENT` review with changed-line inline
@@ -63,6 +63,7 @@ when duplicate publication must be avoided across machines.
 | `--force-review` | Ignore an existing review marker |
 | `--workspace-root PATH` | Use an absolute owner-only fixed workspace; update Codex trust config too |
 | `--model MODEL` | Override the provider's default model |
+| `--diagnostics-root PATH` | Select persistent private execution evidence storage |
 | `--detach` | Submit and return a run ID without waiting |
 
 To apply findings after review, use `--apply --policy PATH` for one explicit PR.
@@ -87,12 +88,15 @@ cao workflow events RUN_ID --no-follow
 cao workflow result RUN_ID --json
 ```
 
-CAO 2.5.0's retained result omits the script's run-level `output`;
-`steps[].output` contains model step results, not the final publication result.
-For combined review/apply or polling, inspect the printed chain journal's
-`child_outputs[RUN_ID]` alongside CAO state. Standalone review has no chain
-journal fallback; preserve live script output and verify publication on GitHub
-when the final output is unavailable.
+CAO 2.5.0's retained API omits run-level output. The workflow saves its final
+result and each completed PR result in private evidence storage before returning.
+Publication intent is retained before POST; an ambiguous response requires exact
+remote reconciliation rather than another POST. Earlier completed PR results
+remain available if discovery fails on a later PR.
+
+```bash
+python3 scripts/results.py --run RUN_ID --root /absolute/evidence-root --verify-cao
+```
 
 When available, inspect the final output's `results`, one entry per PR. Entries
 report the reviewed SHA, result, and timestamps; completed reviews also include findings/publication data.
@@ -116,3 +120,22 @@ For server, authentication, or deployment problems, use
 [common troubleshooting](../../README.md#troubleshooting) and
 [operations](../../docs/OPERATIONS.md#troubleshooting).
 A lost CLI connection should first be checked through the retained run result.
+
+## Logging and durable evidence
+
+Use `--diagnostics-root /absolute/evidence-root` to select persistent storage
+owned by the CAO account: directories require mode `0700`, files `0600`, and
+absolute paths without symlink components. The workflow prints its per-run
+evidence directory, containing final `result.json`, generation history, bounded
+`events.jsonl`, and redacted failed-command diagnostics.
+Combined executions default to `run-evidence/` next to the chain journal;
+standalone executions default to `/tmp/cao-workflow-results`.
+Direct CAO execution accepts `diagnostics_root` as an input and defaults to
+`/tmp/cao-workflow-results` without a journal. Resume uses the recorded root;
+preserve unresolved publication evidence.
+
+`results.py` exits zero when the query succeeds even if the business outcome is
+blocked or failed. Inspect `result`/`status` and `execution_verified` with
+`--verify-cao`; the latter checks retained CAO state, not fresh GitHub publication.
+Use `--full` for the entire saved output. CAO server/terminal logs and DEBUG setup
+are described in the [logging guide](../../docs/WORKFLOW-TRACEABILITY.md#diagnostics-redaction-and-retention).

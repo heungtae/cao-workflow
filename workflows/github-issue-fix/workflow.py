@@ -118,8 +118,13 @@ def command(argv, cwd=None, env=None, timeout=180):
                 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0'}
     if env:
         safe_env.update(env)
-    result = subprocess.run(argv, cwd=cwd, env=safe_env, capture_output=True, text=True, timeout=timeout)
+    try:
+        result = subprocess.run(argv, cwd=cwd, env=safe_env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        diag_command_failure(argv[0], 'TimeoutExpired', stdout=exc.stdout, stderr=exc.stderr)
+        raise
     if result.returncode:
+        diag_command_failure(argv[0], 'CommandFailed', result.returncode, result.stdout, result.stderr)
         raise Blocked(f'{argv[0]} failed (exit {result.returncode}); private output omitted')
     return result.stdout
 
@@ -130,7 +135,8 @@ def credentials(policy):
 
 
 def api(repo, path, policy, method='GET', payload=None):
-    args = ['gh', 'api', '--method', method, f'repos/{repo}/{path}']
+    endpoint = f'repos/{repo}' + ('/' + path if path else '')
+    args = ['gh', 'api', '--method', method, endpoint]
     if payload is not None:
         # Private body file avoids command-line source/Issue text and shell interpretation.
         with tempfile.NamedTemporaryFile(mode='w', prefix='cao-api-', delete=False) as stream:
@@ -189,6 +195,7 @@ def resource_digest(workflow_path, profile_path, config_path):
 
 
 def admission(inputs, agent):
+    diag_event('stage_started', stage='admission')
     if os.getuid() == 0:
         raise Blocked('Use a non-root workflow service user')
     policy = load_policy(inputs)
@@ -207,13 +214,17 @@ def admission(inputs, agent):
     # CAO profiles must disable persisted memory injection.
     if 'codexProfile: cao_incident_readonly' not in Path(journal['profile_path']).read_text():
         raise Blocked('Unexpected model profile')
-    base_url = os.environ.get('CAO_WORKFLOW_BASE_URL')
-    if not base_url:
+    base_url = os.environ.get('CAO_API_BASE_URL')
+    if not base_url or not base_url.startswith(('http://', 'https://')):
         raise Blocked('CAO workflow server identity missing')
     with urlopen(base_url.rstrip('/') + '/settings/memory', timeout=10) as response:
         settings = json.load(response)
     if settings.get('enabled') is not False:
         raise Blocked('Disable CAO server memory injection for incident workflows')
+    if _DIAG:
+        _DIAG['patterns'] = policy.get('redact_patterns', [])
+    diag_event('stage_completed', stage='admission', policy_digest=inputs.get('expected_policy_digest'),
+               resource_digest=inputs.get('expected_resource_digest'))
     return policy
 
 
@@ -254,8 +265,10 @@ def model(work, agent, task, step_id):
     token = 'CAO_INCIDENT_INPUT_' + secrets.token_hex(16)
     path = carrier / (token + '.json')
     atomic(path, task)
+    actual_step_id = step_id + '-' + digest(task)[:16]
     try:
-        result = step('codex', agent, ': ' + token, step_id=step_id + '-' + digest(task)[:16],
+        diag_event('stage_started', stage='model', step_id=actual_step_id, input_digest=digest(task))
+        result = step('codex', agent, ': ' + token, step_id=actual_step_id,
                       recovery='manual', timeout=900, working_directory=str(work))
         raw = str(result.output).strip()
         matches = list(re.finditer(r'(?m)^• (?=\{\s*")', raw))
@@ -269,7 +282,11 @@ def model(work, agent, task, step_id):
             value = json.loads(raw)
         if not isinstance(value, dict):
             raise Blocked('Model must return one JSON object')
+        diag_event('stage_completed', stage='model', step_id=actual_step_id, input_digest=digest(task))
         return redact(value)
+    except Exception as exc:
+        diag_event('stage_failed', stage='model', step_id=actual_step_id, error_type=type(exc).__name__, reason=diag_clean(str(exc)))
+        raise
     finally:
         path.unlink(missing_ok=True)
 
@@ -362,6 +379,12 @@ def validate_page(payload, request):
         for key in ('severity', 'stack_trace', 'trace_id', 'request_id', 'instance_id', 'deployment_sha', 'deployment_ref'):
             if key in record and (not isinstance(record[key], str) or (key != 'stack_trace' and not record[key])):
                 raise Blocked('Invalid optional MCP record metadata')
+        group_fields = ('exception_group_id', 'exception_sequence', 'exception_group_size')
+        if any(k in record for k in group_fields):
+            if (not isinstance(record.get('exception_group_id'), str) or not record['exception_group_id']
+                    or type(record.get('exception_sequence')) is not int or type(record.get('exception_group_size')) is not int
+                    or not 0 <= record['exception_sequence'] < record['exception_group_size'] <= 1000):
+                raise Blocked('Invalid optional exception grouping metadata')
     return payload
 
 
@@ -512,24 +535,284 @@ def evidence(record, scope, policy, minutes, cutoff):
 
 def finish(inputs, result):
     result.update(workflow=WORKFLOW, version=VERSION, repository=inputs.get('repository'),
-                  run_id=os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'))
+                  run_id=_DIAG.get('run_id', os.environ.get('CAO_WORKFLOW_RUN_ID', 'local')))
+    result = diag_result(result)
+    diag_journal_result(inputs, result)
     emit_output(result)
 
 
 def main():
     inputs = get_inputs()
+    diag_init(inputs)
     try:
         result = process(inputs)
-    except Blocked:
-        result = {'status': 'blocked', 'reason': 'Admission, evidence or publication gate blocked; inspect private execution state'}
-    except Exception:
-        result = {'status': 'failed', 'reason': 'Execution failed; no fresh retry authorized'}
+    except Blocked as exc:
+        result = {'status': 'blocked', 'reason_code': 'gate_blocked', 'reason': diag_clean(str(exc)),
+                  'failure_stage': _DIAG.get('stage', 'admission'), 'error_type': type(exc).__name__}
+        diag_event('stage_failed', **result)
+    except Exception as exc:
+        result = {'status': 'failed', 'reason_code': 'execution_failed', 'reason': diag_clean(str(exc)),
+                  'failure_stage': _DIAG.get('stage', 'execution'), 'error_type': type(exc).__name__}
+        diag_event('stage_failed', **result)
     finish(inputs, result)
 
 
+"""Embedded in deployment scripts; private evidence is independent of CAO output."""
+_DIAG = {}
+
+
+def diag_private(value, directory=False):
+    import os
+    import stat
+    from pathlib import Path
+    p = Path(value)
+    if not p.is_absolute() or any(x.is_symlink() for x in (p, *p.parents)):
+        raise ValueError('Evidence paths must be absolute without symlinks')
+    if directory:
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = p.lstat()
+    if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))):
+        raise ValueError('Invalid evidence ownership or permissions')
+    return p
+
+
+def diag_atomic(path, value):
+    import json
+    import os
+    import tempfile
+    diag_private(path.parent, True)
+    if path.exists():
+        diag_private(path)
+    fd, name = tempfile.mkstemp(prefix='.evidence-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, sort_keys=True, ensure_ascii=False)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def diag_init(inputs):
+    import hashlib
+    import os
+    import re
+    import secrets
+    import time
+    from pathlib import Path
+    rid = os.environ.get('CAO_WORKFLOW_RUN_ID') or 'local-' + secrets.token_hex(16)
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', rid) or rid in ('.', '..'):
+        raise ValueError('Invalid evidence run ID')
+    root = inputs.get('diagnostics_root')
+    if not root:
+        journal = inputs.get('execution_state_path')
+        root = str(diag_private(journal).parent / 'run-evidence') if journal else '/tmp/cao-workflow-results'
+    directory = diag_private(diag_private(root, True) / rid, True)
+    generation = os.environ.get('CAO_WORKFLOW_GENERATION', '0')
+    if not re.fullmatch(r'\d{1,10}', generation):
+        raise ValueError('Invalid evidence generation')
+    _DIAG.clear()
+    _DIAG.update(directory=directory, run_id=rid, workflow=WORKFLOW, version=VERSION,
+                 repository=inputs.get('repository'), generation=int(generation), started=time.monotonic(),
+                 subject={k: inputs[k] for k in ('pr_number', 'issue_number', 'monitor_id') if k in inputs},
+                 patterns=[])
+    _DIAG['workflow_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    _DIAG['expectations'] = {k: inputs[k] for k in ('expected_head_sha', 'expected_base_sha',
+                           'head_sha', 'base_sha', 'expected_policy_digest', 'expected_resource_digest') if k in inputs}
+    if inputs.get('execution_state_path'):
+        _DIAG['execution_id'] = Path(inputs['execution_state_path']).stem
+    diag_event('run_started')
+    print('Workflow evidence: ' + str(directory), flush=True)
+    return directory
+
+
+def diag_clean(value, tail=False):
+    import re
+    if isinstance(value, str):
+        patterns = [r'gh[pousr]_[A-Za-z0-9_]{15,}', r'github_pat_[A-Za-z0-9_]{15,}',
+                    r'AKIA[0-9A-Z]{16}', r'(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----',
+                    r'(?i)Bearer\s+[^\s"\']+',
+                    r'(?i)\b[\w.-]*(?:password|secret|token|api[_-]?key|access[_-]?key)[\w.-]*["\']?\s*[=:]\s*["\']?[^\s,"\']+',
+                    r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',
+                    r'https?://[^\s/@]+:[^\s/@]+@'] + _DIAG.get('patterns', [])
+        for pattern in patterns:
+            value = re.sub(pattern, '[REDACTED]', value)
+        return value[-16384:] if tail else value[:16384]
+    if isinstance(value, dict):
+        return {k: '[REDACTED]' if re.fullmatch(r'(?i)(?:password|secret|token|api[_-]?key|authorization|aws_secret_access_key)', str(k))
+                else diag_clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        cleaned = []
+        hide_next = False
+        for item in value:
+            cleaned.append('[REDACTED]' if hide_next else diag_clean(item))
+            hide_next = isinstance(item, str) and bool(re.fullmatch(r'(?i)--?(?:password|secret|token|api-key|access-token)', item))
+        return cleaned
+    return value
+
+
+def diag_event(event, **fields):
+    import datetime
+    import fcntl
+    import json
+    import os
+    import time
+    if not _DIAG:
+        return
+    if fields.get('stage'):
+        _DIAG['stage'] = fields['stage']
+    directory = _DIAG['directory']
+    fd = os.open(directory / 'events.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(directory / 'events.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / 'events.jsonl'
+        if path.exists():
+            diag_private(path)
+        seq_path = directory / 'sequence.json'
+        seq = json.loads(diag_private(seq_path).read_text())['seq'] + 1 if seq_path.exists() else 1
+        row = dict(schema_version=1, seq=seq, at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   run_id=_DIAG['run_id'], workflow=_DIAG['workflow'], version=_DIAG['version'],
+                   repository=_DIAG['repository'], generation=_DIAG['generation'], event=event,
+                   elapsed_ms=int((time.monotonic() - _DIAG['started']) * 1000), **_DIAG['subject'])
+        row.update(diag_clean(fields))
+        row['workflow_sha256'] = _DIAG['workflow_sha256']
+        if 'execution_id' in _DIAG:
+            row['execution_id'] = _DIAG['execution_id']
+        if _DIAG.get('attempt_id'):
+            row.setdefault('attempt_id', _DIAG['attempt_id'])
+        # Keep two bounded files. Durable terminal results/publication intents are never rotated.
+        if path.exists() and path.stat().st_size > 4 * 1024 * 1024:
+            previous = directory / 'events.previous.jsonl'
+            if previous.exists():
+                diag_private(previous)
+            os.replace(path, previous)
+        fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(json.dumps(row, ensure_ascii=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        diag_atomic(seq_path, {'seq': seq})
+
+
+def diag_result(output):
+    import fcntl
+    import json
+    import os
+    if not _DIAG:
+        return output
+    if (output.get('run_id') != _DIAG['run_id'] or output.get('workflow') != _DIAG['workflow']
+            or output.get('repository') != _DIAG['repository']):
+        raise ValueError('Final evidence identity mismatch')
+    output = dict(output, evidence_directory=str(_DIAG['directory']), generation=_DIAG['generation'],
+                  workflow_sha256=_DIAG['workflow_sha256'])
+    output.setdefault('version', _DIAG['version'])
+    output.update(_DIAG['expectations'])
+    if 'execution_id' in _DIAG:
+        output['execution_id'] = _DIAG['execution_id']
+    directory = _DIAG['directory']
+    row = dict(schema_version=1, generation=_DIAG['generation'], output=output)
+    fd = os.open(directory / 'result.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(directory / 'result.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / 'result.json'
+        generation_path = directory / ('result.' + str(row['generation']) + '.json')
+        if generation_path.exists() and json.loads(diag_private(generation_path).read_text()) != row:
+            raise ValueError('Generation result cannot be replaced')
+        if path.exists():
+            old = json.loads(diag_private(path).read_text())
+            if old['generation'] > row['generation'] or (old['generation'] == row['generation'] and old != row):
+                raise ValueError('Terminal result cannot be replaced in the same generation')
+        diag_atomic(generation_path, row)
+        diag_atomic(path, row)
+    diag_event('run_finished', outcome=output.get('status', output.get('result', 'completed')))
+    return output
+
+
+def diag_journal_result(inputs, output):
+    import fcntl
+    import json
+    import os
+    value = inputs.get('execution_state_path')
+    if not value:
+        return
+    path = diag_private(value)
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(str(path) + '.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        rid = output.get('run_id')
+        if (rid not in state.get('run_ids', []) or state.get('workflow') != output.get('workflow')
+                or state.get('inputs', {}).get('repository') != output.get('repository')):
+            raise ValueError('Incident journal output identity mismatch')
+        outputs = state.setdefault('child_outputs', {})
+        if rid in outputs and outputs[rid] != output:
+            if output.get('generation', 0) <= outputs[rid].get('generation', 0):
+                raise ValueError('Terminal incident result cannot be replaced in the same generation')
+            state.setdefault('child_output_history', []).append(outputs[rid])
+        outputs[rid] = output
+        diag_atomic(path, state)
+
+
+def diag_test_command(argv, *, env=None, cwd=None, timeout=600, phase='candidate', command_ref=None):
+    import subprocess
+    import time
+    started = time.monotonic()
+    diag_event('test_started', phase=phase, command_ref=command_ref)
+    try:
+        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False)
+        row = {'phase': phase, 'command': command_ref, 'exit_code': proc.returncode,
+               'result': 'passed' if proc.returncode == 0 else 'failed', 'timeout': False,
+               'stdout': proc.stdout or '', 'stderr': proc.stderr or ''}
+    except subprocess.TimeoutExpired as exc:
+        row = {'phase': phase, 'command': command_ref, 'exit_code': None, 'result': 'failed', 'timeout': True,
+               'stdout': exc.stdout or '', 'stderr': exc.stderr or ''}
+    for key in ('stdout', 'stderr'):
+        if isinstance(row[key], bytes):
+            row[key] = row[key].decode(errors='replace')
+        row[key + '_truncated'] = len(row[key]) > 16384
+        row[key] = diag_clean(row[key], tail=True)
+    row['command'] = diag_clean(row['command'])
+    row['elapsed_ms'] = int((time.monotonic() - started) * 1000)
+    if argv[0] == 'docker' and '--entrypoint' in argv:
+        row['test_image'] = argv[argv.index('--entrypoint') + 2]
+    if _DIAG:
+        import secrets
+        path = _DIAG['directory'] / ('test-' + secrets.token_hex(12) + '.json')
+        diag_atomic(path, row)
+        row['diagnostic_path'] = str(path)
+    diag_event('test_finished', phase=phase, exit_code=row['exit_code'], timeout=row['timeout'],
+               result=row['result'], diagnostic_path=row.get('diagnostic_path'))
+    return row
+
+
+def diag_command_failure(executable, error_type, exit_code=None, stdout='', stderr=''):
+    import secrets
+    if not _DIAG:
+        return
+    row = diag_clean({'executable': executable, 'error_type': error_type, 'exit_code': exit_code,
+                      'stdout': diag_clean(str(stdout or ''), tail=True), 'stderr': diag_clean(str(stderr or ''), tail=True)})
+    path = _DIAG['directory'] / ('command-' + secrets.token_hex(12) + '.json')
+    diag_atomic(path, row)
+    diag_event('command_failed', executable=executable, error_type=error_type,
+               exit_code=exit_code, diagnostic_path=str(path))
+
+
 WORKFLOW = 'github-issue-fix'
-VERSION = 'v1'
+VERSION = 'v2'
 INPUTS = {
+    'diagnostics_root': {'type': 'string', 'required': False},
     'repository': {'type': 'string', 'required': True},
     'issue_number': {'type': 'int', 'required': True},
     'policy_path': {'type': 'string', 'required': True},
@@ -578,6 +861,16 @@ def validate_fix_policy(policy):
     if policy.get('branch_prefix', 'cao/issue-') != 'cao/issue-':
         raise Blocked('Initial release requires cao/issue- branch namespace')
     command(['docker', 'image', 'inspect', policy['test_image']])
+    strategy = policy.get('regression_strategy', 'before_after')
+    if strategy == 'before_after':
+        if (not isinstance(policy.get('regression_commands'), list) or not policy['regression_commands']
+                or any(not isinstance(a, list) or not a or any(not isinstance(v, str) or not v for v in a)
+                       for a in policy['regression_commands'])
+                or not isinstance(policy.get('regression_failure_pattern'), str) or not policy['regression_failure_pattern']):
+            raise Blocked('Configure regression_commands and expected defect regression_failure_pattern')
+        re.compile(policy['regression_failure_pattern'])
+    elif strategy != 'alternative' or not isinstance(policy.get('regression_reason'), str) or not policy['regression_reason']:
+        raise Blocked('Alternative regression requires an operator justification')
 
 
 def git(source, *args, policy=None):
@@ -649,6 +942,14 @@ def apply_proposal(source, files, proposal, policy):
             raise Blocked('Non-fix decision cannot contain edits')
         return []
     edits = proposal.get('edits')
+    outcomes = proposal.get('requirement_outcomes')
+    required = set(policy.get('_requirement_ids', []))
+    if (not isinstance(outcomes, list) or not outcomes
+            or any(not isinstance(r, dict) or r.get('status') != 'addressed' or not isinstance(r.get('reason'), str) or not r['reason']
+                   or not isinstance(r.get('requirement_id'), str) for r in outcomes)
+            or len({r['requirement_id'] for r in outcomes}) != len(outcomes)
+            or (required and {r['requirement_id'] for r in outcomes} != required)):
+        raise Blocked('Every selected Issue requirement needs one addressed outcome')
     if not isinstance(edits, list) or not 1 <= len(edits) <= 40 or not proposal.get('regression_scenarios'):
         raise Blocked('Fix requires edits and meaningful regression scenarios')
     prepared, seen = [], set()
@@ -672,33 +973,74 @@ def apply_proposal(source, files, proposal, policy):
         seen.add(name)
     if not any(any(fnmatch.fnmatchcase(name, p) for p in policy.get('regression_test_paths', [])) for name in seen):
         raise Blocked('Fix requires an edit to an operator-designated regression test path')
+    for row in outcomes:
+        if (not isinstance(row.get('edit_paths'), list) or not row['edit_paths'] or not set(row['edit_paths']) <= seen
+                or not isinstance(row.get('test_paths'), list) or not row['test_paths']
+                or not set(row['test_paths']) <= seen
+                or any(not any(fnmatch.fnmatchcase(name, pattern) for pattern in policy['regression_test_paths'])
+                       for name in row['test_paths'])):
+            raise Blocked('Requirement outcomes must reference validated edits and regression test paths')
     for path, replacement in prepared:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(replacement)
     return sorted(seen)
 
 
-def test_candidate(source, work, policy):
-    copy = work / 'test-source'
+def test_candidate(source, work, policy, commands=None, phase='candidate', failure_pattern=None):
+    copy = work / ('test-source-' + phase)
     shutil.copytree(source, copy, symlinks=True, ignore=shutil.ignore_patterns('.git', '.env', '.env.*'))
     results = []
     try:
-        for argv in policy['test_commands']:
+        for argv in (commands if commands is not None else policy['test_commands']):
             name = 'cao-issue-test-' + secrets.token_hex(12)
             args = ['docker', 'run', '--name', name, '--rm', '--pull=never', '--network=none',
+                    '--label', 'cao-workflow=github-issue-fix', '--label',
+                    'cao.issue.run_id=' + os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'),
                     '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                     '--pids-limit=128', '--memory=2g', '--cpus=2', '--user', f'{os.getuid()}:{os.getgid()}',
                     '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m', '--env', 'HOME=/tmp',
                     '--mount', f'type=bind,src={copy},dst=/work', '--workdir', '/work',
                     '--entrypoint', argv[0], policy['test_image'], *argv[1:]]
             try:
-                command(args, timeout=600)
+                row = diag_test_command(args, timeout=600, phase=phase, command_ref=argv,
+                                        env={'PATH': os.environ.get('PATH', ''), 'HOME': os.environ.get('HOME', '')})
+                if failure_pattern:
+                    if row['timeout'] or row['exit_code'] in (None, 0) or not re.search(failure_pattern, row['stdout'] + '\n' + row['stderr']):
+                        raise Blocked('Original regression did not detect the configured defect; inspect test diagnostics')
+                    row['result'] = 'expected_defect_detected'
+                    if row.get('diagnostic_path'):
+                        diag_atomic(Path(row['diagnostic_path']), row)
+                    diag_event('regression_defect_verified', stage='regression', diagnostic_path=row.get('diagnostic_path'))
+                elif row['result'] != 'passed':
+                    raise Blocked('Isolated validation failed; diagnostic=' + str(row.get('diagnostic_path', 'unavailable')))
             finally:
                 subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=30, check=False)
-            results.append({'command': argv, 'result': 'passed'})
+            results.append({k: v for k, v in row.items() if k not in ('stdout', 'stderr')})
         return results
     finally:
         shutil.rmtree(copy, ignore_errors=True)
+
+
+def verify_regression(source, work, policy, changed, original_files=None):
+    if policy.get('regression_strategy', 'before_after') == 'alternative':
+        return [{'phase': 'alternative', 'result': 'operator_justified', 'reason': policy['regression_reason']}]
+    baseline = work / 'regression-baseline'
+    shutil.copytree(source, baseline, symlinks=True, ignore=shutil.ignore_patterns('.git', '.env', '.env.*'))
+    try:
+        for name in changed:
+            if any(fnmatch.fnmatchcase(name, p) for p in policy['regression_test_paths']):
+                continue
+            target = baseline / name
+            if name in policy.get('new_files', []) and (original_files is None or original_files[name] is None):
+                target.unlink(missing_ok=True)
+            else:
+                target.write_text(git(source, 'show', 'HEAD:' + name))
+        commands = policy['regression_commands']
+        before = test_candidate(baseline, work, policy, commands, 'original', policy['regression_failure_pattern'])
+        after = test_candidate(source, work, policy, commands, 'regression')
+        return before + after
+    finally:
+        shutil.rmtree(baseline, ignore_errors=True)
 
 
 def incident_context(issue, specification, policy, work, base_files):
@@ -710,7 +1052,7 @@ def incident_context(issue, specification, policy, work, base_files):
             raise Blocked('Unverified incident producer marker')
         metadata = json.loads(base64.b64decode(match[1], validate=True))
         if (metadata.get('contract_version') != '1.0' or metadata.get('workflow') != 'mcp-exception-issue'
-                or metadata.get('version') != 'v1' or not re.fullmatch(r'[0-9a-f]{64}', metadata.get('fingerprint', ''))):
+                or metadata.get('version') not in ('v1', 'v2') or not re.fullmatch(r'[0-9a-f]{64}', metadata.get('fingerprint', ''))):
             raise Blocked('Unrecognized incident provenance schema')
     if metadata is None:
         # Operator expressly declares ordinary code Issues; unknown incident data is never inferred.
@@ -773,7 +1115,22 @@ def reconcile_comment(state, path, policy, allow_write=True):
     if remote != state['commit_sha']:
         raise Blocked('Remote branch does not match retained commit')
     marker = '<!-- cao-issue-fix ' + state['execution_key'] + ' -->'
-    body = f'Fix pushed to `{state["branch"]}` at `{state["commit_sha"]}`.\n\nConfigured regression checks passed.\n\n' + marker
+    if state.get('comment_body'):
+        body = state['comment_body']
+    elif state.get('comment_sending') or 'version' not in state:
+        # Preserve the exact payload of legacy ambiguous POSTs.
+        body = f'Fix pushed to `{state["branch"]}` at `{state["commit_sha"]}`.\n\nConfigured regression checks passed.\n\n' + marker
+    else:
+        body = (f'Fix pushed to [{state["branch"]}](https://github.com/{repo}/tree/{state["commit_sha"]})'
+                f' at `{state["commit_sha"]}`.\n\n' + diag_clean(state.get('reason', 'Validated Issue fix'))
+                + '\n\nExecution: `' + state['execution_key'] + '`; CAO run: `' + state.get('run_id', 'legacy')
+                + '`.\n\nValidation:\n```json\n' + json.dumps(diag_clean([
+                    {k: v for k, v in r.items() if k in ('phase', 'command', 'result', 'exit_code', 'timeout')}
+                    for r in state.get('regression', []) + state.get('tests', [])]))
+                + '\n```\n\n' + marker)
+        if len(body.encode()) > 30000:
+            raise Blocked('Result comment exceeds publication budget')
+    state['comment_body'] = body
     publisher = state.get('publisher')
     if not publisher:
         publisher = json.loads(command(['gh', 'api', 'user'], env=credentials(policy)))['login']
@@ -866,14 +1223,25 @@ def process(inputs):
         state = {'status': 'developing', 'execution_key': key, 'issue_number': number, 'snapshot_digest': snapshot,
                  'excluded_comment_ids': excluded, 'base_sha': base_sha, 'base_ref': base_ref,
                  'artifact_path': str(work), 'branch': f'cao/issue-{number}-{key[:16]}', 'mode': inputs.get('apply_mode', 'push')}
+        state.update(workflow=WORKFLOW, version=VERSION, repository=policy['repository'], execution_id=execution,
+                     run_id=os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'), stage='context')
         state.update(previous_execution_key=previous_key, operator_retry_reason=inputs.get('operator_retry_reason'),
                      policy_digest=inputs['expected_policy_digest'], resource_digest=inputs['expected_resource_digest'])
         atomic(path, state)
         try:
+            diag_event('stage_started', stage='context', issue_number=number, base_sha=base_sha, execution_key=key)
             source = checkout(policy['repository'], base_sha, work, policy)
             files = fix_files(source, policy)
             context, safe_specification = incident_context(issue, specification, policy, work, files)
+            requirements = {'title': safe_specification['title']}
+            if safe_specification.get('body'):
+                requirements['body'] = safe_specification['body']
+            requirements.update({'comment-' + str(c['id']): c['body'] for c in safe_specification.get('comments', []) if c.get('body')})
+            policy = dict(policy, _requirement_ids=list(requirements))
+            state.update(requirement_ids=list(requirements), deployed_sha=context.get('deployed_sha'), stage='proposal')
+            atomic(path, state)
             task = {'specification': safe_specification, 'files': files, 'base_sha': base_sha,
+                    'requirements': requirements,
                     'operational_evidence': {k: v for k, v in context.items() if k not in ('scope', 'incident')}}
             for round_number in range(3):
                 admission(inputs, 'issue-fixer')
@@ -882,20 +1250,29 @@ def process(inputs):
                     break
                 context['records'] = evidence(context['incident'], context['scope'], policy, (15, 60)[round_number], now() - dt.timedelta(minutes=2))
                 task['operational_evidence']['records'] = context['records']
+            state['stage'] = 'edits'
+            diag_event('stage_started', stage='edits')
             changed = apply_proposal(source, files, proposal, policy)
             if proposal['decision'] != 'fix':
                 state.update(status=proposal['decision'], reason=proposal['reason'])
                 atomic(path, state)
                 return state
-            state['tests'] = test_candidate(source, work, policy)
-            # Tests run against a disposable copy; candidate remains unchanged.
+            # Retain the patch before validation so failures remain inspectable.
             git(source, 'add', '--', *changed)
             patch = git(source, 'diff', '--cached', '--no-ext-diff', '--binary')
             if len(patch.encode()) > 2000000:
                 raise Blocked('Candidate diff budget exhausted')
             (work / 'candidate.patch').write_text(patch)
             os.chmod(work / 'candidate.patch', 0o600)
-            state.update(status='patch_ready', changed_paths=changed, reason=proposal['reason'])
+            state.update(changed_paths=changed, reason=proposal['reason'], requirement_outcomes=proposal['requirement_outcomes'],
+                         patch_digest=hashlib.sha256(patch.encode()).hexdigest(), stage='regression')
+            atomic(path, state)
+            diag_event('stage_started', stage='regression', patch_digest=state['patch_digest'])
+            state['regression'] = verify_regression(source, work, policy, changed, files)
+            state['stage'] = 'tests'
+            diag_event('stage_started', stage='tests')
+            state['tests'] = test_candidate(source, work, policy)
+            state.update(status='patch_ready', stage='recheck')
             atomic(path, state)
             if state['mode'] == 'patch':
                 return state
@@ -906,11 +1283,14 @@ def process(inputs):
             if branch_sha(policy['repository'], state['branch'], policy) is not None:
                 raise Blocked('Generated branch already exists without retained ownership')
             git(source, '-c', 'user.name=' + policy['git_author_name'], '-c', 'user.email=' + policy['git_author_email'],
-                'commit', '-m', f'fix: address issue #{number}')
+                'commit', '-m', f'fix: address issue #{number}\n\nCAO-Issue: {number}\nCAO-Base: {base_sha}\n'
+                f'CAO-Execution: {key}\nCAO-Run: {state["run_id"]}\nCAO-Patch: {state["patch_digest"]}')
             commit = git(source, 'rev-parse', 'HEAD').strip()
             if git(source, 'rev-parse', 'HEAD^').strip() != base_sha:
                 raise Blocked('Commit parent differs from validated base')
             state.update(commit_sha=commit, push_intent=True, status='reconciling')
+            state['stage'] = 'publish'
+            diag_event('publication_intent', stage='publish', branch=state['branch'], commit_sha=commit)
             atomic(path, state)
             # Empty expected ref permits only creation; competing writers fail without overwrite/rebase.
             git(source, 'push', '--force-with-lease=refs/heads/' + state['branch'] + ':', 'origin',
@@ -918,10 +1298,13 @@ def process(inputs):
             if branch_sha(policy['repository'], state['branch'], policy) != commit:
                 raise Blocked('Push outcome requires reconciliation')
             state['status'] = 'pushed_comment_pending'
+            diag_event('publication_confirmed', stage='publish', branch=state['branch'], commit_sha=commit)
             atomic(path, state)
             admission(inputs, 'issue-fixer')
             return reconcile_comment(state, path, policy)
-        except Exception:
+        except Exception as exc:
+            state.update(failure_stage=state['stage'], error_type=type(exc).__name__, failure_reason=diag_clean(str(exc)))
+            diag_event('stage_failed', stage=state['stage'], error_type=type(exc).__name__, reason=diag_clean(str(exc)))
             if state.get('push_intent'):
                 # Preserve an already verified push even when its result comment fails.
                 state['status'] = 'pushed_comment_pending' if state['status'] == 'pushed_comment_pending' else 'reconciling'

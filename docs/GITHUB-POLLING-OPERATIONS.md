@@ -1,7 +1,7 @@
 # Local GitHub polling operations
 
-The initial integration collects open PRs and runs `github-pr-review` v7 followed
-by `github-pr-apply` v2 in policy-authorized push mode. Collection and execution
+The initial integration collects open PRs and runs `github-pr-review` v8 followed
+by `github-pr-apply` v3 in policy-authorized push mode. Collection and execution
 are separate processes. Source and Handler implementations are registered in
 repository code; configuration cannot load a module or execute a command.
 
@@ -142,3 +142,8 @@ are no production Issue/tick Sources or Bindings here. Future adapters must
 validate exclusive trigger ownership, coalesce pending monitor ticks, report
 actual ingestion lag independently, and reconcile their execution journal. They
 must not implement an MCP server in this repository.
+
+For final workflow results and private stage/validation diagnostics, use
+[workflow traceability](WORKFLOW-TRACEABILITY.md). Automatic executions retain
+run evidence next to their chain journals; changing dependencies still creates
+a new admitted identity and never authorizes replay of unresolved publication.

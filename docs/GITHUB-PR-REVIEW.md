@@ -4,6 +4,7 @@
 
 | Input | Default | Meaning |
 | --- | --- | --- |
+| `diagnostics_root` | journal-adjacent or `/tmp/cao-workflow-results` | Owner-only durable result/events/test evidence |
 | `repository` | required | `owner/name` |
 | `pr_number` | absent | One PR; absent searches open PRs |
 | `publish` | true | false forces dry-run |
@@ -30,6 +31,15 @@ Wrapper example: `./scripts/run.sh github-pr-review --repository owner/repo --pr
 8. Before writing, recheck HEAD/base SHA, open state and remote marker. New HEAD/base identities get new comments to preserve review history. Always remove the temporary checkout. New publication returns typed `review_id`, `review_url`, `base_sha`, and the existing `publish_result`; dry-run and skipped paths do not claim a new review ID.
 
 The hidden HTML marker is encoded JSON, so it adds no visible noise. Identity includes workflow version. A reviewer/profile change that affects findings requires a version bump. Multiple machines share markers through GitHub rather than local ephemeral state. GitHub does not offer an atomic compare-and-create comment operation; two exactly simultaneous runs can still race after the second marker check. Serialize triggers per PR when strict exactly-once posting is required.
+
+## Durable results and internal execution inputs
+
+Review v8 saves final and per-PR results plus a publisher-bound exact intent
+before GitHub POST. CAO 2.5.0 retained results omit run-level output; use the
+private result/journal and matching CAO state. `execution_state_path`,
+`expected_policy_digest`, `expected_resource_digest`, and `authorized_policy_path`
+are trusted coordinator inputs, not PR-provided configuration. See
+[traceability](WORKFLOW-TRACEABILITY.md) for recovery, logging, and test mapping.
 
 ## Policy and trust
 

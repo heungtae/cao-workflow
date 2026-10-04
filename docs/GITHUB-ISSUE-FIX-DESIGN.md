@@ -1,6 +1,6 @@
 # GitHub Issue Fix and Branch Push Workflow Design
 
-Status: Initial implementation delivered as v1. See
+Status: Initial implementation delivered as v2. See
 [incident operations](INCIDENT-WORKFLOWS.md) for supported configuration,
 qualification requirements, and execution limits. Live external-provider/model/
 GitHub qualification remains environment-dependent.
@@ -48,7 +48,7 @@ flowchart TD
 
 Use the inspected CAO 2.5.0 script-tier contract with static `WORKFLOW`, `VERSION`,
 and `INPUTS`, and the `cao_workflow` shim's `get_inputs()`, `step()`, and
-`emit_output()` functions. The proposed initial version is `v1`.
+`emit_output()` functions. The current version is `v2`.
 
 Register the workflow and its dedicated `issue-fixer` profile in `manifest.json`.
 The profile is independent of the exception workflow's triager. The workflow is
@@ -427,6 +427,15 @@ it must never be reported as confirmed failure or success without remote evidenc
   validation does not establish provider availability or live integration.
 - Update README and operations documentation. Bump the workflow version when
   fix semantics or publication gates change, invalidating stale execution keys.
+
+## Logging and requirement traceability
+
+The implementation saves final output before emitting it and joins private
+workflow evidence with retained CAO state. Results without matching evidence
+block resume; stage/attempt/test diagnostics remain owner-only. Current v2
+regression, section outcomes, multiline relationships and provenance contracts
+are documented in [workflow traceability](WORKFLOW-TRACEABILITY.md), together
+with requirement IDs and implementation/test evidence.
 
 ## References
 

@@ -1,4 +1,4 @@
-# github-issue-fix v1
+# github-issue-fix v2
 
 Develop and test a fix for a manually selected open Issue. The default **push**
 mode creates a new `cao/issue-N-KEY` branch and posts a result comment. Select
@@ -38,9 +38,17 @@ Commands below run from the repository root. Replace repository, Issue, and path
 | `source_paths` / `editable_paths` | Selected source/test context and permitted edit patterns |
 | `regression_test_paths` / `new_files` | Required regression-test edit paths and explicitly permitted new files |
 | `test_image` / `test_commands` | Preloaded immutable image and mandatory test argv arrays |
+| `regression_commands` / `regression_failure_pattern` | New tests must detect the configured defect on original production source, then pass on the candidate |
+| `regression_strategy` / `regression_reason` | Defaults to `before_after`; `alternative` requires an operator justification and candidate tests |
 | `git_author_name` / `git_author_email` | Commit author |
 | `allow_code_issues` | Permit ordinary code Issues without incident logs |
 | `incident_publishers` / `issue_incidents` | Verified incident producer or explicit operator mapping for incident Issues |
+
+Policies from v1 need explicit regression configuration before running v2:
+configure `regression_commands` and a defect-specific `regression_failure_pattern`
+for `before_after`, or select `alternative` with an operator-written
+`regression_reason`. Replace the example placeholders; the model cannot select
+the alternative strategy.
 
 For ordinary code Issues, enable `allow_code_issues` as intended. Incident Issues
 need verified producer/replay metadata or an operator mapping. Their evidence is
@@ -79,6 +87,12 @@ for this workflow's no-publication mode. Patch and push have separate execution
 identities: a patch run is not promoted directly; push runs develop/validate
 under their own identity.
 
+The model supplies one addressed outcome for each selected specification section
+(title, body, and discussion comment), referencing edited files and regression
+tests. Unresolved or missing outcomes block publication. Direct before/after
+regression restores original production files while retaining the new tests;
+failures caused by missing dependencies or timeout do not establish the defect.
+
 Tests use a disposable copy with no network, host credentials, `.git`, or mount
 of the original candidate. Push rechecks the Issue specification and base SHA,
 creates exactly one commit on the validated base, and verifies the remote SHA.
@@ -94,12 +108,14 @@ cao workflow status RUN_ID
 cao workflow result RUN_ID --json
 ```
 
-CAO 2.5.0's retained result omits run-level `output`. This workflow
-and its submission launcher do not implement the PR chain's `child_outputs`
-fallback; the launcher can report `CAO output identity mismatch` after a
-completed run. Preserve the journal and any live script output, inspect retained
-workflow evidence and GitHub publication, and resolve the outcome manually
-before retrying. Model step output alone does not establish publication.
+The workflow saves final output before emitting it and updates the submission
+journal under the same lock as the launcher. CAO 2.5.0's retained API omits that
+output, so the launcher joins the private evidence with matching CAO state.
+A completed run without verified final evidence blocks completion and resume.
+
+```bash
+python3 scripts/results.py --journal /absolute/execution.json --verify-cao
+```
 
 When final workflow output is available, inspect `output.status`, not only the
 CAO run state or launcher exit code:
@@ -114,7 +130,7 @@ CAO run state or launcher exit code:
 
 `artifact_path` identifies the private `issue-fix-*` candidate directory under
 policy `workspace_root`. The generated `candidate.patch` is retained there after
-successful editing/tests. Execution records under `state_root/issue-executions/`
+successful edit validation, before tests; it remains available if tests fail. Execution records under `state_root/issue-executions/`
 retain tests, snapshot identity, and publication state. Keep these with the
 submission journal while investigating failures or pending publication.
 
@@ -162,3 +178,22 @@ For policy ownership, memory admission, deployment, or server problems, see
 [config.example.json](config.example.json) documents direct CAO inputs; it is not
 automatically loaded. The [design reference](../../docs/GITHUB-ISSUE-FIX-DESIGN.md)
 describes admission, regression validation, and publication contracts.
+
+## Logging and durable evidence
+
+Use `--diagnostics-root /absolute/evidence-root` to select persistent storage
+owned by the CAO account: directories require mode `0700`, files `0600`, and
+absolute paths without symlink components. The workflow prints its per-run
+evidence directory, containing final `result.json`, generation history, bounded
+`events.jsonl`, and redacted failed-command diagnostics.
+Test execution records include bounded redacted stdout/stderr tails.
+Launcher executions default to `run-evidence/` next to the submission journal.
+Direct CAO execution accepts `diagnostics_root` as an input and defaults to
+`/tmp/cao-workflow-results` without a journal. Resume uses the recorded root;
+preserve unresolved publication evidence.
+
+`results.py` exits zero when the query succeeds even if the business outcome is
+blocked or failed. Inspect `result`/`status` and `execution_verified` with
+`--verify-cao`; the latter checks retained CAO state, not fresh GitHub publication.
+Use `--full` for the entire saved output. CAO server/terminal logs and DEBUG setup
+are described in the [logging guide](../../docs/WORKFLOW-TRACEABILITY.md#diagnostics-redaction-and-retention).

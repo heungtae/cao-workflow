@@ -1,4 +1,4 @@
-"""CAO 2.5 script-tier GitHub PR review workflow. Version v7."""
+"""CAO 2.5 script-tier GitHub PR review workflow. Version v8."""
 from __future__ import annotations
 
 import json
@@ -16,6 +16,7 @@ from pathlib import Path
 from cao_workflow import emit_output, get_inputs, step
 
 INPUTS = {
+    "diagnostics_root": {"type": "string", "required": False},
     "repository": {"type": "string", "required": True},
     "pr_number": {"type": "int", "required": False},
     "publish_mode": {"type": "string", "required": False, "default": "review"},
@@ -33,7 +34,7 @@ INPUTS = {
     "authorized_policy_path": {"type": "string", "required": False},
 }
 
-VERSION = "v7"
+VERSION = "v8"
 WORKFLOW = "github-pr-review"
 SEVERITIES = ("critical", "major", "minor", "info")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -50,6 +51,7 @@ def run_command(args: list[str], *, cwd: Path | None = None, allow_failure: bool
                 input_text: str | None = None) -> str:
     result = subprocess.run(args, cwd=cwd, input=input_text, text=True, capture_output=True, check=False, timeout=180)
     if result.returncode and not allow_failure:
+        diag_command_failure(args[0], 'CommandFailed', result.returncode, result.stdout, result.stderr)
         raise RuntimeError(f"{args[0]} command failed ({result.returncode}): {result.stderr[:300]}")
     return result.stdout if result.returncode == 0 else ""
 
@@ -253,10 +255,17 @@ def codex_json(role: str, prompt: str, invocation_id: str, work: Path, model: st
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump({"task": prompt}, stream, ensure_ascii=False)
         options = {"model": model} if model else {}
+        import hashlib
+        diag_event('stage_started', stage='model', step_id=invocation_id,
+                   input_digest=hashlib.sha256(prompt.encode()).hexdigest())
         # ':' is the shell no-op if CAO mistakes a failed Codex startup for an idle shell.
         handle = step("codex", role, f": {token}", step_id=invocation_id,
                       recovery="manual", timeout=900, working_directory=str(root), **options)
         value = response_object(str(handle.output))
+        diag_event('stage_completed', stage='model', step_id=invocation_id)
+    except Exception as exc:
+        diag_event('stage_failed', stage='model', step_id=invocation_id, error_type=type(exc).__name__)
+        raise
     finally:
         input_path.unlink(missing_ok=True)
     if not isinstance(value, dict):
@@ -411,12 +420,48 @@ def render_inline_comments(review: dict, allowed_files: dict[str, set[int]]) -> 
 
 def publish(repository: str, number: int, sha: str, body: str, comments: list[dict]) -> dict:
     payload = {"commit_id": sha, "body": body, "event": "COMMENT", "comments": comments}
+    path = _DIAG['directory'] / f'review-{number}.publication.json' if _DIAG else None
+    if path:
+        if path.exists():
+            saved = json.loads(diag_private(path).read_text())
+            if saved['repository'] != repository or saved['payload'] != payload:
+                raise RuntimeError('Review publication intent differs; reconcile retained intent')
+            if saved['status'] in ('sending', 'published'):
+                matches = [r for r in pages(repository, f'pulls/{number}/reviews')
+                           if r.get('commit_id') == sha and r.get('body') == body
+                           and r.get('user', {}).get('login') == saved['publisher']]
+                if len(matches) != 1:
+                    raise RuntimeError('Review publication outcome unresolved; no new POST authorized')
+                review = matches[0]
+                if (type(review.get('id')) is not int or review['id'] <= 0
+                        or review.get('html_url') != f'https://github.com/{repository}/pull/{number}#pullrequestreview-{review["id"]}'):
+                    raise RuntimeError('Retained review publication identity is invalid')
+                actual = pages(repository, f'pulls/{number}/reviews/{review["id"]}/comments')
+                expected = sorted((c['path'], c['body']) for c in comments)
+                observed = sorted((c.get('path'), c.get('body')) for c in actual
+                                  if c.get('commit_id') == sha and c.get('user', {}).get('login') == saved['publisher'])
+                if observed != expected:
+                    raise RuntimeError('Review publication comment evidence differs')
+                diag_atomic(path, dict(saved, status='published', review_id=review['id'], review_url=review['html_url']))
+                diag_event('publication_confirmed', stage='publish', pr_number=number, review_id=review['id'])
+                return {'review_id': review['id'], 'review_url': review['html_url']}
+        publisher = gh_json('api', 'user')['login']
+        saved = {'repository': repository, 'pr': number, 'run_id': _DIAG['run_id'],
+                 'payload': payload, 'publisher': publisher, 'status': 'reserved'}
+        diag_atomic(path, saved)
+        diag_event('publication_intent', stage='publish', pr_number=number, head_sha=sha)
+        saved['status'] = 'sending'
+        diag_atomic(path, saved)
     endpoint = f"repos/{repository}/pulls/{number}/reviews"
     result = json.loads(run_command(["gh", "api", "--method", "POST", endpoint, "--input", "-"],
                                     input_text=json.dumps(payload, ensure_ascii=False)))
     if type(result.get("id")) is not int or result["id"] <= 0 or not isinstance(result.get("html_url"), str):
         raise RuntimeError("GitHub published review without a valid typed ID/URL; reconcile before retry")
-    return {"review_id": result["id"], "review_url": result["html_url"]}
+    output = {"review_id": result["id"], "review_url": result["html_url"]}
+    if path:
+        diag_atomic(path, dict(saved, status='published', **output))
+        diag_event('publication_confirmed', stage='publish', pr_number=number, **output)
+    return output
 
 
 def supersede_v3_comment(repository: str, number: int, old_id: int, replacement_id: int) -> str:
@@ -457,6 +502,7 @@ def publication_gate(review: dict, body: str, comments: list[dict], number: int,
 def process_pr(repository: str, pr: dict, inputs: dict) -> dict:
     automation_guard(inputs)
     number = pr["number"]
+    diag_event('stage_started', stage='review', pr_number=number, head_sha=pr['head']['sha'], base_sha=pr['base']['sha'])
     sha = pr["head"]["sha"]
     if inputs.get("expected_head_sha") and inputs["expected_head_sha"] != sha:
         raise RuntimeError("PR HEAD differs from the orchestration snapshot")
@@ -465,6 +511,16 @@ def process_pr(repository: str, pr: dict, inputs: dict) -> dict:
         raise RuntimeError('PR base differs from the orchestration snapshot')
     identity = marker(repository, number, sha) + f'\n<!-- cao-review-base {base_sha} -->'
     start = datetime.now(timezone.utc).isoformat()
+    intent = _DIAG['directory'] / f'review-{number}.publication.json' if _DIAG else None
+    if intent and intent.exists():
+        saved = json.loads(diag_private(intent).read_text())
+        payload = saved['payload']
+        if saved['repository'] != repository or payload['commit_id'] != sha or identity not in payload['body']:
+            raise RuntimeError('Retained review intent snapshot differs')
+        published = publish(repository, number, sha, payload['body'], payload['comments'])
+        return {'pr': number, 'head_sha': sha, 'base_sha': base_sha, 'result': 'completed',
+                'findings': len(payload['comments']), 'publish_result': published['review_url'],
+                **published, 'start': start, 'end': datetime.now(timezone.utc).isoformat()}
     comments = pages(repository, f"issues/{number}/comments", limit=300)
     reviews = pages(repository, f"pulls/{number}/reviews", limit=300)
     if not inputs.get("force_review") and (has_marker(comments, identity) or has_marker(reviews, identity)):
@@ -598,7 +654,9 @@ def automation_journal_update(inputs, kind, output):
         if kind == 'child_outputs':
             outputs = journal.setdefault('child_outputs', {})
             if rid in outputs and outputs[rid] != output:
-                raise ValueError('A terminal child output cannot be overwritten')
+                if output.get('generation', 0) <= outputs[rid].get('generation', 0):
+                    raise ValueError('A terminal child output cannot be overwritten in the same generation')
+                journal.setdefault('child_output_history', []).append(outputs[rid])
             outputs[rid] = output
         else:
             if journal.get(kind) and journal[kind] != output:
@@ -614,23 +672,288 @@ def automation_journal_update(inputs, kind, output):
         finally:
             if os.path.exists(filename):
                 os.unlink(filename)
+"""Embedded in deployment scripts; private evidence is independent of CAO output."""
+_DIAG = {}
+
+
+def diag_private(value, directory=False):
+    import os
+    import stat
+    from pathlib import Path
+    p = Path(value)
+    if not p.is_absolute() or any(x.is_symlink() for x in (p, *p.parents)):
+        raise ValueError('Evidence paths must be absolute without symlinks')
+    if directory:
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = p.lstat()
+    if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != (0o700 if directory else 0o600)
+            or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))):
+        raise ValueError('Invalid evidence ownership or permissions')
+    return p
+
+
+def diag_atomic(path, value):
+    import json
+    import os
+    import tempfile
+    diag_private(path.parent, True)
+    if path.exists():
+        diag_private(path)
+    fd, name = tempfile.mkstemp(prefix='.evidence-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, sort_keys=True, ensure_ascii=False)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def diag_init(inputs):
+    import hashlib
+    import os
+    import re
+    import secrets
+    import time
+    from pathlib import Path
+    rid = os.environ.get('CAO_WORKFLOW_RUN_ID') or 'local-' + secrets.token_hex(16)
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', rid) or rid in ('.', '..'):
+        raise ValueError('Invalid evidence run ID')
+    root = inputs.get('diagnostics_root')
+    if not root:
+        journal = inputs.get('execution_state_path')
+        root = str(diag_private(journal).parent / 'run-evidence') if journal else '/tmp/cao-workflow-results'
+    directory = diag_private(diag_private(root, True) / rid, True)
+    generation = os.environ.get('CAO_WORKFLOW_GENERATION', '0')
+    if not re.fullmatch(r'\d{1,10}', generation):
+        raise ValueError('Invalid evidence generation')
+    _DIAG.clear()
+    _DIAG.update(directory=directory, run_id=rid, workflow=WORKFLOW, version=VERSION,
+                 repository=inputs.get('repository'), generation=int(generation), started=time.monotonic(),
+                 subject={k: inputs[k] for k in ('pr_number', 'issue_number', 'monitor_id') if k in inputs},
+                 patterns=[])
+    _DIAG['workflow_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    _DIAG['expectations'] = {k: inputs[k] for k in ('expected_head_sha', 'expected_base_sha',
+                           'head_sha', 'base_sha', 'expected_policy_digest', 'expected_resource_digest') if k in inputs}
+    if inputs.get('execution_state_path'):
+        _DIAG['execution_id'] = Path(inputs['execution_state_path']).stem
+    diag_event('run_started')
+    print('Workflow evidence: ' + str(directory), flush=True)
+    return directory
+
+
+def diag_clean(value, tail=False):
+    import re
+    if isinstance(value, str):
+        patterns = [r'gh[pousr]_[A-Za-z0-9_]{15,}', r'github_pat_[A-Za-z0-9_]{15,}',
+                    r'AKIA[0-9A-Z]{16}', r'(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----',
+                    r'(?i)Bearer\s+[^\s"\']+',
+                    r'(?i)\b[\w.-]*(?:password|secret|token|api[_-]?key|access[_-]?key)[\w.-]*["\']?\s*[=:]\s*["\']?[^\s,"\']+',
+                    r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',
+                    r'https?://[^\s/@]+:[^\s/@]+@'] + _DIAG.get('patterns', [])
+        for pattern in patterns:
+            value = re.sub(pattern, '[REDACTED]', value)
+        return value[-16384:] if tail else value[:16384]
+    if isinstance(value, dict):
+        return {k: '[REDACTED]' if re.fullmatch(r'(?i)(?:password|secret|token|api[_-]?key|authorization|aws_secret_access_key)', str(k))
+                else diag_clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        cleaned = []
+        hide_next = False
+        for item in value:
+            cleaned.append('[REDACTED]' if hide_next else diag_clean(item))
+            hide_next = isinstance(item, str) and bool(re.fullmatch(r'(?i)--?(?:password|secret|token|api-key|access-token)', item))
+        return cleaned
+    return value
+
+
+def diag_event(event, **fields):
+    import datetime
+    import fcntl
+    import json
+    import os
+    import time
+    if not _DIAG:
+        return
+    if fields.get('stage'):
+        _DIAG['stage'] = fields['stage']
+    directory = _DIAG['directory']
+    fd = os.open(directory / 'events.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(directory / 'events.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / 'events.jsonl'
+        if path.exists():
+            diag_private(path)
+        seq_path = directory / 'sequence.json'
+        seq = json.loads(diag_private(seq_path).read_text())['seq'] + 1 if seq_path.exists() else 1
+        row = dict(schema_version=1, seq=seq, at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   run_id=_DIAG['run_id'], workflow=_DIAG['workflow'], version=_DIAG['version'],
+                   repository=_DIAG['repository'], generation=_DIAG['generation'], event=event,
+                   elapsed_ms=int((time.monotonic() - _DIAG['started']) * 1000), **_DIAG['subject'])
+        row.update(diag_clean(fields))
+        row['workflow_sha256'] = _DIAG['workflow_sha256']
+        if 'execution_id' in _DIAG:
+            row['execution_id'] = _DIAG['execution_id']
+        if _DIAG.get('attempt_id'):
+            row.setdefault('attempt_id', _DIAG['attempt_id'])
+        # Keep two bounded files. Durable terminal results/publication intents are never rotated.
+        if path.exists() and path.stat().st_size > 4 * 1024 * 1024:
+            previous = directory / 'events.previous.jsonl'
+            if previous.exists():
+                diag_private(previous)
+            os.replace(path, previous)
+        fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(json.dumps(row, ensure_ascii=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        diag_atomic(seq_path, {'seq': seq})
+
+
+def diag_result(output):
+    import fcntl
+    import json
+    import os
+    if not _DIAG:
+        return output
+    if (output.get('run_id') != _DIAG['run_id'] or output.get('workflow') != _DIAG['workflow']
+            or output.get('repository') != _DIAG['repository']):
+        raise ValueError('Final evidence identity mismatch')
+    output = dict(output, evidence_directory=str(_DIAG['directory']), generation=_DIAG['generation'],
+                  workflow_sha256=_DIAG['workflow_sha256'])
+    output.setdefault('version', _DIAG['version'])
+    output.update(_DIAG['expectations'])
+    if 'execution_id' in _DIAG:
+        output['execution_id'] = _DIAG['execution_id']
+    directory = _DIAG['directory']
+    row = dict(schema_version=1, generation=_DIAG['generation'], output=output)
+    fd = os.open(directory / 'result.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(directory / 'result.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        path = directory / 'result.json'
+        generation_path = directory / ('result.' + str(row['generation']) + '.json')
+        if generation_path.exists() and json.loads(diag_private(generation_path).read_text()) != row:
+            raise ValueError('Generation result cannot be replaced')
+        if path.exists():
+            old = json.loads(diag_private(path).read_text())
+            if old['generation'] > row['generation'] or (old['generation'] == row['generation'] and old != row):
+                raise ValueError('Terminal result cannot be replaced in the same generation')
+        diag_atomic(generation_path, row)
+        diag_atomic(path, row)
+    diag_event('run_finished', outcome=output.get('status', output.get('result', 'completed')))
+    return output
+
+
+def diag_journal_result(inputs, output):
+    import fcntl
+    import json
+    import os
+    value = inputs.get('execution_state_path')
+    if not value:
+        return
+    path = diag_private(value)
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        diag_private(str(path) + '.lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        rid = output.get('run_id')
+        if (rid not in state.get('run_ids', []) or state.get('workflow') != output.get('workflow')
+                or state.get('inputs', {}).get('repository') != output.get('repository')):
+            raise ValueError('Incident journal output identity mismatch')
+        outputs = state.setdefault('child_outputs', {})
+        if rid in outputs and outputs[rid] != output:
+            if output.get('generation', 0) <= outputs[rid].get('generation', 0):
+                raise ValueError('Terminal incident result cannot be replaced in the same generation')
+            state.setdefault('child_output_history', []).append(outputs[rid])
+        outputs[rid] = output
+        diag_atomic(path, state)
+
+
+def diag_test_command(argv, *, env=None, cwd=None, timeout=600, phase='candidate', command_ref=None):
+    import subprocess
+    import time
+    started = time.monotonic()
+    diag_event('test_started', phase=phase, command_ref=command_ref)
+    try:
+        proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False)
+        row = {'phase': phase, 'command': command_ref, 'exit_code': proc.returncode,
+               'result': 'passed' if proc.returncode == 0 else 'failed', 'timeout': False,
+               'stdout': proc.stdout or '', 'stderr': proc.stderr or ''}
+    except subprocess.TimeoutExpired as exc:
+        row = {'phase': phase, 'command': command_ref, 'exit_code': None, 'result': 'failed', 'timeout': True,
+               'stdout': exc.stdout or '', 'stderr': exc.stderr or ''}
+    for key in ('stdout', 'stderr'):
+        if isinstance(row[key], bytes):
+            row[key] = row[key].decode(errors='replace')
+        row[key + '_truncated'] = len(row[key]) > 16384
+        row[key] = diag_clean(row[key], tail=True)
+    row['command'] = diag_clean(row['command'])
+    row['elapsed_ms'] = int((time.monotonic() - started) * 1000)
+    if argv[0] == 'docker' and '--entrypoint' in argv:
+        row['test_image'] = argv[argv.index('--entrypoint') + 2]
+    if _DIAG:
+        import secrets
+        path = _DIAG['directory'] / ('test-' + secrets.token_hex(12) + '.json')
+        diag_atomic(path, row)
+        row['diagnostic_path'] = str(path)
+    diag_event('test_finished', phase=phase, exit_code=row['exit_code'], timeout=row['timeout'],
+               result=row['result'], diagnostic_path=row.get('diagnostic_path'))
+    return row
+
+
+def diag_command_failure(executable, error_type, exit_code=None, stdout='', stderr=''):
+    import secrets
+    if not _DIAG:
+        return
+    row = diag_clean({'executable': executable, 'error_type': error_type, 'exit_code': exit_code,
+                      'stdout': diag_clean(str(stdout or ''), tail=True), 'stderr': diag_clean(str(stderr or ''), tail=True)})
+    path = _DIAG['directory'] / ('command-' + secrets.token_hex(12) + '.json')
+    diag_atomic(path, row)
+    diag_event('command_failed', executable=executable, error_type=error_type,
+               exit_code=exit_code, diagnostic_path=str(path))
 # END GENERATED PR GUARD
 
 
 def main() -> None:
     inputs = get_inputs()
+    diag_init(inputs)
     repository = inputs["repository"]
     if not REPO_RE.fullmatch(repository) or ".." in repository:
         raise ValueError("repository must be owner/name")
     if inputs.get("publish_mode", "review") not in ("dry-run", "review"):
         raise ValueError("publish_mode must be dry-run or review")
-    prs = discover(repository, inputs.get("pr_number"), inputs.get("base_branch"), inputs.get("include_drafts", False))
     results = []
-    for pr in prs:
-        results.append(process_pr(repository, pr, inputs))
-    output = {"workflow": WORKFLOW, "version": VERSION, "run_id": os.environ.get("CAO_WORKFLOW_RUN_ID", ""), "repository": repository, "results": results}
+    failure = None
+    try:
+        prs = discover(repository, inputs.get("pr_number"), inputs.get("base_branch"), inputs.get("include_drafts", False))
+        for pr in prs:
+            row = process_pr(repository, pr, inputs)
+            results.append(row)
+            diag_atomic(_DIAG['directory'] / f'pr-{pr["number"]}.result.json', row)
+            diag_event('stage_completed', stage='review', pr_number=pr['number'], result=row['result'], review_id=row.get('review_id'))
+    except Exception as exc:
+        failure = exc
+        diag_event('stage_failed', error_type=type(exc).__name__, reason=diag_clean(str(exc)))
+    output = {"workflow": WORKFLOW, "version": VERSION, "run_id": _DIAG['run_id'], "repository": repository,
+              "result": "failed" if failure else "completed", "results": results}
+    if failure:
+        output.update(error_type=type(failure).__name__, reason=diag_clean(str(failure)), failure_stage=_DIAG.get('stage'))
+    output = diag_result(output)
     automation_record_output(inputs, output)
     emit_output(output)
+    if failure:
+        raise RuntimeError('Review failed; inspect durable workflow evidence') from None
 
 
 if __name__ == "__main__":

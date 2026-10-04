@@ -1,6 +1,7 @@
 WORKFLOW = 'mcp-exception-issue'
-VERSION = 'v1'
+VERSION = 'v2'
 INPUTS = {
+    'diagnostics_root': {'type': 'string', 'required': False},
     'repository': {'type': 'string', 'required': True},
     'monitor_id': {'type': 'string', 'required': True},
     'policy_path': {'type': 'string', 'required': True},
@@ -30,8 +31,40 @@ def store(root):
         CREATE TABLE IF NOT EXISTS incidents (monitor TEXT, identity TEXT, record TEXT, status TEXT,
             attempts INTEGER DEFAULT 0, retry_at TEXT, result TEXT, PRIMARY KEY(monitor,identity));
         CREATE TABLE IF NOT EXISTS publications (fingerprint TEXT PRIMARY KEY, status TEXT, payload TEXT);
+        CREATE TABLE IF NOT EXISTS incident_attempts (attempt_id TEXT PRIMARY KEY, monitor TEXT, identity TEXT,
+            run_id TEXT, started TEXT, finished TEXT, result TEXT);
     ''')
     return db
+
+
+def group_exceptions(events):
+    """Only provider-declared complete, ordered groups can become one exception."""
+    groups, result = {}, []
+    for event in events:
+        group = event.get('exception_group_id')
+        if group is None:
+            result.append(event)
+            continue
+        if (not isinstance(group, str) or not group or type(event.get('exception_sequence')) is not int
+                or type(event.get('exception_group_size')) is not int or not 1 <= event['exception_group_size'] <= 1000):
+            raise Blocked('Invalid exception relationship metadata')
+        groups.setdefault((event['service'], event['environment'], event['source_id'], group), []).append(event)
+    for key, rows in groups.items():
+        rows.sort(key=lambda r: r['exception_sequence'])
+        size = rows[0]['exception_group_size']
+        if len(rows) != size or [r['exception_sequence'] for r in rows] != list(range(size)):
+            raise Blocked('Incomplete or duplicate multiline exception group; checkpoint retained')
+        for field in ('exception_group_size', 'instance_id', 'trace_id', 'request_id', 'deployment_sha', 'deployment_ref'):
+            if len({r.get(field) for r in rows}) != 1:
+                raise Blocked('Multiline relationship has ambiguous instance/revision metadata')
+        merged = dict(rows[0])
+        ids = [r['evidence_id'] for r in rows]
+        merged.update(evidence_id=digest([key, ids]), group_evidence_ids=ids,
+                      stack_trace='\n'.join(r.get('stack_trace') or r['message'] for r in rows),
+                      group_provenance=[dict(r.get('provenance', {}), record_id=r['record_id']) for r in rows])
+        merged['provenance'] = dict(merged.get('provenance', {}), group_records=merged['group_provenance'])
+        result.append(merged)
+    return result
 
 
 def fingerprint(repo, record, sha, scope):
@@ -240,7 +273,9 @@ def process(inputs):
                 end = min(end, start + dt.timedelta(hours=24))
             if end > cutoff or end - start > dt.timedelta(hours=24):
                 raise Blocked('Collection interval exceeds stable cutoff or 24-hour budget')
-            events = collect(scope, policy, 'exceptions', start, end)
+            diag_event('stage_started', stage='collection', monitor_id=inputs['monitor_id'], interval=[timestamp(start), timestamp(end)])
+            events = group_exceptions(collect(scope, policy, 'exceptions', start, end))
+            diag_event('stage_completed', stage='collection', event_count=len(events), evidence_digest=digest(events))
             # Retain every collected event and watermark in one transaction only after complete coverage.
             if not dry:
                 with db:
@@ -269,6 +304,15 @@ def process(inputs):
                 status, retry_at, result = 'blocked', None, {}
                 publication_started = False
                 retry_hint = 0
+                attempt_id = secrets.token_hex(16)
+                if _DIAG:
+                    _DIAG['attempt_id'] = attempt_id
+                attempt_start = timestamp(now())
+                if not dry:
+                    with db:
+                        db.execute('INSERT INTO incident_attempts VALUES (?,?,?,?,?,?,?)',
+                                   (attempt_id, key, identity, os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'), attempt_start, None, None))
+                diag_event('stage_started', stage='incident', evidence_id=identity, attempt_id=attempt_id)
                 work = Path(tempfile.mkdtemp(prefix='incident-', dir=private(policy['workspace_root'], True)))
                 try:
                     decision, proposal, sha, records = analyze(event, scope, policy, work, cutoff, inputs)
@@ -290,10 +334,14 @@ def process(inputs):
                 except ReadFailure as error:
                     status = 'deferred' if error.retryable and attempts < 3 else 'blocked'
                     retry_hint = error.retry_after_seconds
-                except Blocked:
+                    result.update(reason_code='mcp_read_failed', reason=diag_clean(str(error)))
+                except Blocked as error:
                     status = 'blocked'
-                except Exception:
+                    result.update(reason_code='gate_blocked', reason=diag_clean(str(error)))
+                except Exception as error:
                     status = 'reconciling' if publication_started else 'failed'
+                    result.update(reason_code='publication_unknown' if publication_started else 'analysis_failed',
+                                  error_type=type(error).__name__, reason=diag_clean(str(error)))
                 finally:
                     shutil.rmtree(work, ignore_errors=True)
                 if status == 'deferred':
@@ -301,7 +349,10 @@ def process(inputs):
                     retry_at = max(retry_at, timestamp(now() + dt.timedelta(seconds=retry_hint)))
                     if result.get('decision') == 'needs_context':
                         retry_at = max(retry_at, timestamp(instant(event['occurred_at']) + dt.timedelta(minutes=62)))
-                result.update(status=status, evidence_id=identity)
+                result.update(status=status, evidence_id=identity, attempt_id=attempt_id,
+                              run_id=os.environ.get('CAO_WORKFLOW_RUN_ID', 'local'))
+                diag_event('stage_completed', stage='incident', evidence_id=identity, attempt_id=attempt_id,
+                           result=status, reason_code=result.get('reason_code'))
                 results.append(result)
                 if not dry:
                     with db:
@@ -311,6 +362,8 @@ def process(inputs):
                             result['retry_history'] = history
                         db.execute('UPDATE incidents SET status=?,attempts=?,retry_at=?,result=? WHERE monitor=? AND identity=?',
                                    (status, attempts + 1, retry_at, json.dumps(result), key, identity))
+                        db.execute('UPDATE incident_attempts SET finished=?,result=? WHERE attempt_id=?',
+                                   (timestamp(now()), json.dumps(result), attempt_id))
             return {'status': 'dry-run' if dry else ('reconciling' if any(r['status'] == 'reconciling' for r in results) else 'processed'), 'incidents': results, 'interval': [timestamp(start), timestamp(end)]}
     finally:
         db.close()

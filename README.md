@@ -15,10 +15,10 @@ Their linked READMEs cover configuration, options, results, and recovery.
 
 | Workflow | Use it to | Default GitHub effect | Additional setup |
 | --- | --- | --- | --- |
-| [github-pr-review v7](workflows/github-pr-review/README.md) | Review one PR or discover open PRs | Publish a `COMMENT` review with inline findings | Review Codex config |
-| [github-pr-apply v2](workflows/github-pr-apply/README.md) | Apply a review, standalone or after review | Save a tested patch; push requires `--apply-mode push` | Apply Codex config, policy, Docker/test image |
-| [mcp-exception-issue v1](workflows/mcp-exception-issue/README.md) | Analyze MCP exceptions against deployed source | Create or reuse evidence-supported Issues | Incident Codex config, policy, external MCP provider |
-| [github-issue-fix v1](workflows/github-issue-fix/README.md) | Fix a manually selected open Issue | Push a new Issue branch and post a result comment | Incident Codex config, policy, Docker/test image; MCP for incident evidence |
+| [github-pr-review v8](workflows/github-pr-review/README.md) | Review one PR or discover open PRs | Publish a `COMMENT` review with inline findings | Review Codex config |
+| [github-pr-apply v3](workflows/github-pr-apply/README.md) | Apply a review, standalone or after review | Save a tested patch; push requires `--apply-mode push` | Apply Codex config, policy, Docker/test image |
+| [mcp-exception-issue v2](workflows/mcp-exception-issue/README.md) | Analyze MCP exceptions against deployed source | Create or reuse evidence-supported Issues | Incident Codex config, policy, external MCP provider |
+| [github-issue-fix v2](workflows/github-issue-fix/README.md) | Fix a manually selected open Issue | Push a new Issue branch and post a result comment | Incident Codex config, policy, Docker/test image; MCP for incident evidence |
 
 PR review and apply can run together through a resumable coordinator. The two
 incident workflows run independently; neither invokes the other. Models review
@@ -188,12 +188,35 @@ The automation-specific `doctor` also checks the configured policy, test image,
 and owned PR deployments. See [polling operations](docs/GITHUB-POLLING-OPERATIONS.md).
 
 CAO 2.5.0's retained result endpoint returns state and `steps[].output`, but
-omits the script's run-level `output`. Combined PR runs and polling save that
-output in the printed chain journal's `child_outputs`, keyed by run ID; compare
-it with the matching CAO terminal state. Standalone PR runs and incident workflows
-do not provide that journal fallback. Preserve any live script output and
-retained artifacts; missing output requires manual investigation and must not
-be interpreted as publication success.
+omits the script's run-level `output`. All four workflows now save that final
+output before emitting it, together with private stage events and test diagnostics.
+The workflow prints `Workflow evidence: DIRECTORY`. Combined PR and incident
+launchers also retain `child_outputs`, keyed by run ID, in their printed journal.
+
+```bash
+python3 scripts/results.py --journal /absolute/execution.json --verify-cao
+python3 scripts/results.py --run RUN_ID --root /absolute/evidence-root --verify-cao
+```
+
+Use `--diagnostics-root /absolute/evidence-root` on launchers (or the
+`diagnostics_root` CAO input) to select persistent owner-only storage. By default,
+journal-backed executions use `run-evidence/` next to the journal; standalone PR
+runs and direct CAO runs without a journal use `/tmp/cao-workflow-results`.
+Directories require mode `0700`, files `0600`, and absolute paths owned by the
+CAO account without symlink components. Preserve unresolved publication evidence.
+See [logging and traceability](docs/WORKFLOW-TRACEABILITY.md) for layouts,
+redaction, recovery, and requirement-to-test mappings.
+
+`scripts/results.py` exits zero when the evidence query succeeds, including for
+blocked or failed business outcomes. Inspect `result`/`status` and, with
+`--verify-cao`, `execution_verified`; this flag checks saved evidence against CAO
+state, not current GitHub publication. Add `--full` to show the entire saved output.
+
+Workflow diagnostics are in the printed evidence directory: `events.jsonl` for
+stages, `command-*.json` for failed commands, and `test-*.json` for test execution
+including bounded, redacted stdout/stderr tails where tests run. CAO server and
+terminal logs are separate; see the [logging guide](docs/WORKFLOW-TRACEABILITY.md#diagnostics-redaction-and-retention)
+for their paths and `CAO_LOG_LEVEL=DEBUG` setup.
 
 A CAO state of `completed` means the script returned. When workflow output is
 available, PR workflows use `result` (review has a `results` array); incident workflows use
@@ -239,13 +262,14 @@ Start with `make status`, `make doctor`, and `cao workflow result RUN_ID --json`
 | `missing` / `outdated` deployment | Install/update the selected workflow, then inspect `make status` |
 | `unmanaged` / `modified` / context mismatch | Compare runtime files, ownership state, and Git sources before reconciling; normal update will not overwrite them |
 | Policy, Docker, or MCP admission failure | Use the workflow README's setup checklist; example policies contain placeholders |
-| CAO completed, but no expected review/Issue/push | Inspect workflow output, per-item statuses, and artifacts; completed alone does not establish publication |
+| CAO completed, but no expected review/Issue/push | Use `scripts/results.py` with the printed journal/evidence directory; inspect business outcomes and publication evidence |
 | Connection lost or publication outcome uncertain | Preserve state and resume the recorded execution using the workflow-specific guide |
 
 ## Further documentation
 
 - [Polling operations](docs/GITHUB-POLLING-OPERATIONS.md) and
   [validation evidence](docs/GITHUB-POLLING-VALIDATION.md): queue, services, and recovery.
+- [Workflow traceability](docs/WORKFLOW-TRACEABILITY.md): durable results, stage events, diagnostics, and requirement/test mapping.
 - [Operations](docs/OPERATIONS.md): deployment, rollback, CAO upgrades, apply runner setup.
 - [Incident operations](docs/INCIDENT-WORKFLOWS.md): provider qualification, policy contracts, recovery.
 - [External MCP log server specification](docs/MCP-LOG-SERVER-SPEC.md): provider contract; server implementation and deployment are external.

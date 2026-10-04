@@ -121,3 +121,12 @@ execution, and durable publication recovery.
 
 See [polling setup, services and recovery](GITHUB-POLLING-OPERATIONS.md) for the
 repository-managed collector/Worker CLI and systemd user templates.
+
+## Durable workflow diagnostics
+
+All four workflows save final output and private stage events before emitting
+their result. Use the printed evidence directory or submission journal with
+`scripts/results.py`. See [workflow traceability](WORKFLOW-TRACEABILITY.md) for
+CAO 2.5.0 result compatibility, persistent storage, redaction, regression policy
+changes, and the requirement-to-test matrix. No runtime deployment or live
+provider qualification is implied by local validation.

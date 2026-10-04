@@ -49,3 +49,12 @@ one-carrier-file read restriction remains soft policy, as with the reviewers.
 It does not isolate every readable file in CAO's user home. Do not treat this
 profile as a filesystem credential denylist. Runtime account trust remains an
 operational prerequisite. See the [full contract](GITHUB-PR-REVIEW-APPLY-DESIGN.md).
+
+## Durable workflow diagnostics
+
+All four workflows save final output and private stage events before emitting
+their result. Use the printed evidence directory or submission journal with
+`scripts/results.py`. See [workflow traceability](WORKFLOW-TRACEABILITY.md) for
+CAO 2.5.0 result compatibility, persistent storage, redaction, regression policy
+changes, and the requirement-to-test matrix. No runtime deployment or live
+provider qualification is implied by local validation.

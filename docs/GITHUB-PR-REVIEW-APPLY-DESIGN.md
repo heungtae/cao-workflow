@@ -1,9 +1,10 @@
 # GitHub PR Review → Apply Workflow Design
 
-Status: **Implemented — local validation**. `github-pr-review` v7,
-`github-pr-apply` v2, the coordinator, and a manual GitHub Action are implemented.
-Operational validation combining model execution, GitHub review publication, and
-push against an actual target PR has not been performed.
+Status: **Implemented — local validation**. `github-pr-review` v8,
+`github-pr-apply` v3, the coordinator, and a manual GitHub Action are implemented.
+Prior v7/v2 live review/publication/push evidence is recorded in
+[polling validation](GITHUB-POLLING-VALIDATION.md). It does not qualify the changed
+v8/v3 bytes; current validation is local/controlled, including Docker checks.
 
 ## Goals and Decisions
 
@@ -73,11 +74,11 @@ manager revision and never loads Action or workflow code from the PR branch.
 | --- | --- | --- |
 | Coordinator request | `repository`, `pr_number`, `apply_mode`, optional `model` | `owner/name`, one open PR, supported mode |
 | GitHub PR snapshot | Base repository, HEAD repository/branch/SHA, draft flag, state | Refetch before and after review and immediately before apply publication |
-| Review result | CAO run ID, `repository`, PR number, review workflow version, HEAD SHA, result, `review_id`, URL, finding count | Verify completed state and structured `output` from `cao workflow result RUN_ID --json` |
+| Review result | CAO run ID, `repository`, PR number, review workflow version, HEAD SHA, result, `review_id`, URL, finding count | Join completed CAO state with matching durable workflow/journal output; retained API omits run-level output |
 | Apply input | `repository`, `pr_number`, original `head_sha`, `base_sha`, `review_id`, `apply_mode`, `policy_path` | Refetch review and inline comments through GitHub API; never infer IDs from URLs or model output |
 | Apply result | CAO run ID, original HEAD, review ID, state, changed files, check results, candidate patch path, optional new commit SHA | Fail on missing or inconsistent results |
 
-In `github-pr-review` v7, `publish()` returns the integer `id` and URL from the
+In `github-pr-review` v8, `publish()` returns the integer `id` and URL from the
 GitHub POST response as `review_id` and `review_url`. The existing `publish_result`
 URL is retained. Output includes base SHA as well as HEAD, and publication includes
 a separate base marker. A changed base therefore triggers a new review even when
@@ -181,11 +182,18 @@ changed lines, changed PR state or HEAD, push requests for forks or disallowed
 branches, failed validation, invalid model output, or failed permission separation.
 These failures do not modify review comments or select an arbitrary alternative review.
 
+## Results and logging
+
+All four workflows now share owner-only final results, ordered stage events and
+bounded redacted test/command diagnostics. Read final results through
+`scripts/results.py`; do not infer business success from CAO completed or model
+step output. See [traceability and requirements](WORKFLOW-TRACEABILITY.md).
+
 ## Implementation Files and Validation Criteria
 
 | File | Implementation |
 | --- | --- |
-| `workflows/github-pr-review/workflow.py` | v7 typed review ID, HEAD/base snapshot, base marker |
+| `workflows/github-pr-review/workflow.py` | v8 durable result/publication intent, typed review ID and HEAD/base snapshot |
 | `workflows/github-pr-apply/workflow.py` | Review ownership and changed-line validation, exact replacement, candidate patch, isolated tests, optional push |
 | `agents/pr-review-applier.md` | Separate read-only edit proposal profile |
 | `scripts/manage.py`, `scripts/review_apply.py`, `scripts/run-review-apply.sh` | Shared `run.sh --apply` entry point, PR serialization, durable run IDs, two-stage execution, resume and cancellation |

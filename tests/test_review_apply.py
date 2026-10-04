@@ -20,18 +20,18 @@ def state():
         'repository': 'owner/repo', 'pr_number': 1, 'head_sha': SHA, 'base_sha': BASE,
         'head_ref': 'fix/one', 'head_repository': 'owner/repo', 'policy_path': '/operator/policy.json',
         'apply_mode': 'patch', 'model': None, 'review_workspace': '/tmp/review', 'apply_workspace': '/tmp/apply',
-        'versions': {'github-pr-review': 'v7', 'github-pr-apply': 'v2'}}}
+        'versions': {'github-pr-review': 'v8', 'github-pr-apply': 'v3'}}}
 
 
 def review_output(result='completed', count=1):
-    return {'workflow': 'github-pr-review', 'version': 'v7', 'repository': 'owner/repo',
+    return {'workflow': 'github-pr-review', 'version': 'v8', 'repository': 'owner/repo',
             'results': [{'pr': 1, 'head_sha': SHA, 'base_sha': BASE, 'result': result,
                          'findings': count, 'review_id': 12 if result == 'completed' else None,
                          'publish_result': 'url'}]}
 
 
 def apply_output():
-    return {'workflow': 'github-pr-apply', 'version': 'v2', 'repository': 'owner/repo',
+    return {'workflow': 'github-pr-apply', 'version': 'v3', 'repository': 'owner/repo',
             'pr': 1, 'head_sha': SHA, 'review_id': 12, 'apply_mode': 'patch', 'result': 'applied'}
 
 
@@ -83,7 +83,7 @@ class ChainTests(unittest.TestCase):
     def test_ambiguous_or_wrong_author_reviews_are_not_selected(self):
         for rows in ([review(), review()], [dict(review(), user={'login': 'attacker'})], [dict(review(), commit_id='c' * 40)]):
             with self.subTest(rows=rows), patch.object(chain, 'pages', return_value=rows), self.assertRaises(ValueError):
-                chain.eligible_review('owner/repo', 1, SHA, 'v7', ['review-bot'], None, BASE)
+                chain.eligible_review('owner/repo', 1, SHA, 'v8', ['review-bot'], None, BASE)
 
     def test_changed_base_or_branch_invalidates_snapshot(self):
         for field in ('base', 'head'):

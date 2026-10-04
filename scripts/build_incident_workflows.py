@@ -8,9 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def build(check=False):
     common = (ROOT / 'workflows/_incident/common.py').read_text()
+    diagnostics = (ROOT / 'workflows/_shared/diagnostics.py').read_text()
     for name, fragment in [('mcp-exception-issue', 'monitor.py'), ('github-issue-fix', 'fix.py')]:
         output = ROOT / 'workflows' / name / 'workflow.py'
-        body = common + '\n\n' + (ROOT / 'workflows/_incident' / fragment).read_text()
+        body = common + '\n\n' + diagnostics + '\n\n' + (ROOT / 'workflows/_incident' / fragment).read_text()
         if check:
             if not output.exists() or output.read_text() != body:
                 raise ValueError(f'Regenerate {output} with scripts/build_incident_workflows.py')

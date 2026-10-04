@@ -445,6 +445,7 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--expected-findings", type=int)
     parser.add_argument("--detach", action="store_true")
     parser.add_argument('--state-root')
+    parser.add_argument('--diagnostics-root')
     parser.add_argument('--chain-id')
     parser.add_argument('--authorized-policy-path')
     for field in ('head-sha', 'base-sha', 'policy-digest', 'resource-digest'):
@@ -464,7 +465,7 @@ def run(argv: list[str]) -> None:
             cmd += ['--model', args.model]
         if args.force_review:
             cmd.append('--force-review')
-        for field in ('state_root', 'chain_id', 'authorized_policy_path', 'expected_head_sha', 'expected_base_sha',
+        for field in ('state_root', 'diagnostics_root', 'chain_id', 'authorized_policy_path', 'expected_head_sha', 'expected_base_sha',
                       'expected_policy_digest', 'expected_resource_digest'):
             value = getattr(args, field)
             if value is not None:
@@ -499,7 +500,7 @@ def run(argv: list[str]) -> None:
         if not codex_apply_profile_ok():
             raise ManagementError(f"Configure apply profile first: {codex_apply_profile_path()}", 3)
         cmd = ['cao', 'workflow', 'run', str(deployed_workflow(args.workflow)), '--input', f'repository={args.repository}']
-        for key in ('pr_number', 'review_id', 'head_sha', 'policy_path', 'apply_mode', 'expected_findings', 'workspace_root', 'model'):
+        for key in ('pr_number', 'review_id', 'head_sha', 'policy_path', 'apply_mode', 'expected_findings', 'workspace_root', 'model', 'diagnostics_root'):
             value = getattr(args, key)
             if value is not None:
                 cmd += ['--input', f'{key}={value}']
@@ -517,7 +518,7 @@ def run(argv: list[str]) -> None:
     # Address the exact deployed file. A server using another CAO_HOME_DIR then
     # rejects the path instead of running a different workflow with the same name.
     cmd = ["cao", "workflow", "run", str(dst), "--input", f"repository={args.repository}"]
-    for key in ("pr_number", "base_branch", "workspace_root", "model"):
+    for key in ("pr_number", "base_branch", "workspace_root", "model", "diagnostics_root"):
         value = getattr(args, key, None)
         if value is None and key in defaults:
             value = defaults[key]

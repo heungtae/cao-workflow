@@ -1,4 +1,4 @@
-# mcp-exception-issue v1
+# mcp-exception-issue v2
 
 Collect exceptions and related logs from an external MCP provider, analyze source
 at the deployed GitHub revision, and publish evidence-supported, deduplicated
@@ -102,12 +102,14 @@ cao workflow status RUN_ID
 cao workflow result RUN_ID --json
 ```
 
-CAO 2.5.0's retained result omits run-level `output`. This workflow
-and its submission launcher do not implement the PR chain's `child_outputs`
-fallback; the launcher can report `CAO output identity mismatch` after a
-completed run. Preserve the journal and any live script output, inspect retained
-workflow evidence and GitHub publication, and resolve the outcome manually
-before retrying. Model step output alone does not establish publication.
+The workflow saves final output before emitting it and updates the submission
+journal under the same lock as the launcher. CAO 2.5.0's retained API omits that
+output, so the launcher joins the private evidence with matching CAO state.
+A completed run without verified final evidence blocks completion and resume.
+
+```bash
+python3 scripts/results.py --journal /absolute/execution.json --verify-cao
+```
 
 When final workflow output is available, inspect `output.status` and every entry
 in `output.incidents`. Top-level `processed` does not mean every incident produced an Issue.
@@ -120,6 +122,12 @@ in `output.incidents`. Top-level `processed` does not mean every incident produc
 | `deferred` | Transient read failure or expected future evidence; bounded retries on subsequent monitor runs |
 | `blocked` / `failed` | Inspect evidence, configuration, and CAO step results before explicit retry |
 | `reconciling` | Publication outcome is uncertain; preserve state and resume |
+
+Normalized multiline records can declare `exception_group_id`, zero-based
+`exception_sequence`, and `exception_group_size`. Only complete ordered groups
+with consistent instance/revision metadata are combined. Missing/duplicate
+members block collection without advancing the checkpoint. Automatic incident
+attempts retain run IDs, timestamps, outcomes, and reasons in `incident_attempts`.
 
 The monitor resolves the deployed revision and selected GitHub source before
 collecting additional context. Context starts at five minutes on either side of
@@ -170,3 +178,21 @@ See [recovery details](../../docs/INCIDENT-WORKFLOWS.md#recovery-and-evidence-li
 and [common troubleshooting](../../README.md#troubleshooting).
 [config.example.json](config.example.json) documents direct CAO inputs; it is not
 automatically loaded by the launcher.
+
+## Logging and durable evidence
+
+Use `--diagnostics-root /absolute/evidence-root` to select persistent storage
+owned by the CAO account: directories require mode `0700`, files `0600`, and
+absolute paths without symlink components. The workflow prints its per-run
+evidence directory, containing final `result.json`, generation history, bounded
+`events.jsonl`, and redacted failed-command diagnostics.
+Launcher executions default to `run-evidence/` next to the submission journal.
+Direct CAO execution accepts `diagnostics_root` as an input and defaults to
+`/tmp/cao-workflow-results` without a journal. Resume uses the recorded root;
+preserve unresolved publication evidence.
+
+`results.py` exits zero when the query succeeds even if the business outcome is
+blocked or failed. Inspect `result`/`status` and `execution_verified` with
+`--verify-cao`; the latter checks retained CAO state, not fresh GitHub publication.
+Use `--full` for the entire saved output. CAO server/terminal logs and DEBUG setup
+are described in the [logging guide](../../docs/WORKFLOW-TRACEABILITY.md#diagnostics-redaction-and-retention).

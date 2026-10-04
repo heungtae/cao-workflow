@@ -87,7 +87,9 @@ def automation_journal_update(inputs, kind, output):
         if kind == 'child_outputs':
             outputs = journal.setdefault('child_outputs', {})
             if rid in outputs and outputs[rid] != output:
-                raise ValueError('A terminal child output cannot be overwritten')
+                if output.get('generation', 0) <= outputs[rid].get('generation', 0):
+                    raise ValueError('A terminal child output cannot be overwritten in the same generation')
+                journal.setdefault('child_output_history', []).append(outputs[rid])
             outputs[rid] = output
         else:
             if journal.get(kind) and journal[kind] != output:

@@ -292,3 +292,16 @@ integration success. Versioned examples, tool JSON Schemas, semantic rules, and
 provider limitations are delivered with the external handoff. This repository
 validates the consuming contract; it does not deploy or certify the provider's
 logging infrastructure.
+
+## Optional normalized exception relationships
+
+Workflow client v2 accepts a complete normalized relationship triple:
+`exception_group_id` (nonempty string), `exception_sequence` (zero-based integer),
+and `exception_group_size` (integer 1..1000). These fields are optional; providers
+returning a complete stack trace in one record need not add them. A group must
+include every sequence exactly once across the fully collected interval, with
+consistent service/environment/source/instance/correlation/deployment identity.
+Incomplete or ambiguous groups cannot advance the monitor checkpoint. The
+client preserves original record IDs and query provenance for combined events.
+Provider tool schema changes still require operator qualification and new
+configured schema digests; these fields do not bypass completeness validation.

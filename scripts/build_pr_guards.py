@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def build(check=False):
     guard = (ROOT / 'workflows/_pr/guard.py').read_text().rstrip()
+    diagnostics = (ROOT / 'workflows/_shared/diagnostics.py').read_text().rstrip()
+    guard = guard.replace('# END GENERATED PR GUARD', diagnostics + '\n# END GENERATED PR GUARD')
     for name in ('github-pr-review', 'github-pr-apply'):
         path = ROOT / 'workflows' / name / 'workflow.py'
         source = path.read_text()

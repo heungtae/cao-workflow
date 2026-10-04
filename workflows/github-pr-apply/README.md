@@ -1,6 +1,6 @@
-# github-pr-apply v2
+# github-pr-apply v3
 
-Apply an authenticated CAO v7 review at its original PR HEAD and base. The default
+Apply an authenticated CAO v8 review at its original PR HEAD and base. The default
 `patch` mode retains a tested candidate. Explicit `push` mode updates the PR
 branch only after policy checks, complete outcomes, and passing isolated tests.
 
@@ -81,7 +81,7 @@ must match trusted paths in the Codex configs. Defaults are
   --policy /absolute/operator/apply-policy.json --apply-mode patch
 ```
 
-Use the original full HEAD SHA and GitHub review ID from a published v7 review.
+Use the original full HEAD SHA and GitHub review ID from a published v8 review.
 The workflow authenticates its author, markers, base snapshot, and inline findings
 again. Optional standalone flags are `--apply-mode push`, `--workspace-root PATH`,
 `--model MODEL`, `--expected-findings N`, and `--detach`. Review-only flags do not
@@ -99,12 +99,17 @@ cao workflow result RUN_ID --json
 ```
 
 CAO `completed` alone does not establish a successful application. Inspect the
-apply workflow's `result` and `apply_mode`. CAO 2.5.0's retained result
-omits run-level `output`; combined runs and polling retain it in
-`child_outputs[RUN_ID]` in the printed chain journal. Compare that output with
-the matching CAO terminal state. Standalone apply has no chain fallback; inspect
-live script output and retained candidate `result.json`, and verify any remote
-commit before retrying. Missing evidence does not establish a successful push.
+workflow's `result` and `apply_mode` in the printed journal or durable evidence:
+
+```bash
+python3 scripts/results.py --journal /absolute/CHAIN.json --verify-cao
+python3 scripts/results.py --run RUN_ID --root /absolute/evidence-root --verify-cao
+```
+
+All executions save final output before emitting it. CAO 2.5.0's retained API
+omits run-level output, so standalone apply joins its saved result with retained
+CAO state when verifying an earlier application. Missing evidence blocks reuse. Preserve the same diagnostics root when checking
+an earlier standalone application; another root cannot establish its outcome.
 
 | Result | Meaning |
 | --- | --- |
@@ -139,7 +144,7 @@ its retained CAO result and artifacts before retrying, especially after a push.
 | Symptom | Action |
 | --- | --- |
 | Missing/modified/outdated deployment | Inspect `make status`; update owned resources after resolving modifications |
-| Review cannot be authenticated | Verify review ID, author allowlist, v7 marker, original HEAD and base; create a fresh review for a new snapshot |
+| Review cannot be authenticated | Verify review ID, author allowlist, v8 marker, original HEAD and base; create a fresh review for a new snapshot |
 | Docker/image/test failure | Check same-host Docker access, immutable preloaded image, offline dependencies, and non-root test permissions |
 | Path/context rejection | Match editable paths and explicitly configure related context/new files |
 | Push denied | Check branch allowlist; forks, protected/base/default branches, partial outcomes, failed tests, and stale HEAD/base block push |
@@ -169,3 +174,23 @@ See [runner setup](../../docs/OPERATIONS.md#review--apply-setup-and-recovery).
 
 The [implementation design](../../docs/GITHUB-PR-REVIEW-APPLY-DESIGN.md) describes
 review authentication, replacement validation, and publication contracts.
+
+## Logging and durable evidence
+
+Use `--diagnostics-root /absolute/evidence-root` to select persistent storage
+owned by the CAO account: directories require mode `0700`, files `0600`, and
+absolute paths without symlink components. The workflow prints its per-run
+evidence directory, containing final `result.json`, generation history, bounded
+`events.jsonl`, and redacted failed-command diagnostics.
+Test execution records include bounded redacted stdout/stderr tails.
+Combined executions default to `run-evidence/` next to the chain journal;
+standalone executions default to `/tmp/cao-workflow-results`.
+Direct CAO execution accepts `diagnostics_root` as an input and defaults to
+`/tmp/cao-workflow-results` without a journal. Resume uses the recorded root;
+preserve unresolved publication evidence.
+
+`results.py` exits zero when the query succeeds even if the business outcome is
+blocked or failed. Inspect `result`/`status` and `execution_verified` with
+`--verify-cao`; the latter checks retained CAO state, not fresh GitHub publication.
+Use `--full` for the entire saved output. CAO server/terminal logs and DEBUG setup
+are described in the [logging guide](../../docs/WORKFLOW-TRACEABILITY.md#diagnostics-redaction-and-retention).

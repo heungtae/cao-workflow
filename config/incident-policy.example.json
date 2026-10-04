@@ -40,6 +40,9 @@
       "new_files": [],
       "test_image": "tests@sha256:REPLACE_WITH_PRELOADED_IMAGE_DIGEST",
       "test_commands": [["python3", "-m", "unittest", "discover", "-s", "tests"]],
+      "regression_strategy": "before_after",
+      "regression_commands": [["python3", "-m", "unittest", "discover", "-s", "tests"]],
+      "regression_failure_pattern": "AssertionError:.*REPLACE_WITH_EXPECTED_DEFECT",
       "allow_code_issues": true,
       "incident_publishers": ["REPLACE_WITH_GITHUB_PUBLISHER_LOGIN"],
       "issue_incidents": {}

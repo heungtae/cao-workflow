@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import secrets
+import stat
 import sys
 from pathlib import Path
 
@@ -14,6 +16,44 @@ import manage
 import review_apply
 
 NAMES = {'mcp-exception-issue': 'exception-triager', 'github-issue-fix': 'issue-fixer'}
+
+
+def persist(state, path):
+    fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        info = os.fstat(lock.fileno())
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or not stat.S_ISREG(info.st_mode):
+            raise ValueError('Invalid incident journal lock')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            saved = json.loads(path.read_text())
+            if saved['execution_id'] != state['execution_id']:
+                raise ValueError('Incident journal identity changed')
+            state['child_outputs'] = saved.get('child_outputs', {})
+            if 'child_output_history' in saved:
+                state['child_output_history'] = saved['child_output_history']
+        manage.atomic_json(path, state)
+
+
+def retained_result(rid, state, path, missing_ok=False):
+    result = review_apply.workflow_result(rid, missing_ok=missing_ok)
+    saved = json.loads(path.read_text()) if path.exists() else state
+    if saved.get('execution_id') != state['execution_id'] or saved.get('workflow') != state['workflow']:
+        raise ValueError('Incident journal identity changed')
+    output = saved.get('child_outputs', {}).get(rid)
+    if result is None:
+        if output:
+            raise ValueError('Missing CAO state for retained incident output')
+        return None
+    result = dict(result)
+    if not isinstance(result.get('output'), dict):
+        result['output'] = output
+    if result.get('state') == 'completed':
+        output = result.get('output')
+        if (not isinstance(output, dict) or output.get('workflow') != state['workflow']
+                or output.get('run_id') != rid or output.get('repository') != state['inputs']['repository']):
+            raise ValueError('Completed CAO run lacks verified incident output; preserve state for reconciliation')
+    return result
 
 
 def resource_identity(name, deployed):
@@ -32,7 +72,7 @@ def resource_identity(name, deployed):
 
 def submit(state, path, deployed):
     rid = state['run_ids'][-1]
-    prior = review_apply.workflow_result(rid, missing_ok=True)
+    prior = retained_result(rid, state, path, missing_ok=True)
     if prior is None:
         args = ['cao', 'workflow', 'run', str(deployed), '--detach', '--json', '--run-id', rid]
         for key, value in state['inputs'].items():
@@ -46,24 +86,24 @@ def submit(state, path, deployed):
         output = prior.get('output') or {}
         if output.get('status') not in ('reconciling', 'pushed_comment_pending'):
             state['result'] = prior
-            manage.atomic_json(path, state)
+            persist(state, path)
             return prior
         if state['inputs'].get('recovery_only'):
             state['result'] = prior
-            manage.atomic_json(path, state)
+            persist(state, path)
             return prior
         state['inputs']['recovery_only'] = True
         state['run_ids'].append(state['execution_id'] + '-recovery-' + str(len(state['run_ids'])))
-        manage.atomic_json(path, state)
+        persist(state, path)
         return submit(state, path, deployed)
     review_apply.command(['cao', 'workflow', 'wait', rid, '--json'], check=False)
-    result = review_apply.workflow_result(rid)
+    result = retained_result(rid, state, path)
     output = result.get('output')
     if result.get('state') == 'completed' and (not isinstance(output, dict) or output.get('workflow') != state['workflow']
                                               or output.get('run_id') != rid or output.get('repository') != state['inputs']['repository']):
         raise ValueError('CAO output identity mismatch')
     state['result'] = result
-    manage.atomic_json(path, state)
+    persist(state, path)
     return result
 
 
@@ -71,6 +111,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('workflow', choices=NAMES)
     parser.add_argument('--repository')
+    parser.add_argument('--diagnostics-root')
     parser.add_argument('--monitor', dest='monitor_id')
     parser.add_argument('--issue', dest='issue_number', type=int)
     parser.add_argument('--policy', dest='policy_path')
@@ -88,7 +129,7 @@ def main(argv=None):
     fingerprint, profile, config = resource_identity(args.workflow, deployed)
     if args.resume:
         if any((args.repository, args.monitor_id, args.issue_number, args.policy_path, args.since, args.until,
-                args.dry_run, args.apply_mode, args.state_root, args.retry_reason, args.retry_incident)):
+                args.dry_run, args.apply_mode, args.state_root, args.retry_reason, args.retry_incident, args.diagnostics_root)):
             raise ValueError('Resume rejects input overrides')
         path = Path(args.resume)
         if any(parent.is_symlink() for parent in [path, *path.parents]):
@@ -110,6 +151,8 @@ def main(argv=None):
         if not args.repository or not args.policy_path:
             raise ValueError('--repository and --policy are required')
         inputs = {'repository': args.repository.lower(), 'policy_path': args.policy_path}
+        if args.diagnostics_root:
+            inputs['diagnostics_root'] = args.diagnostics_root
         if any(parent.is_symlink() for parent in [Path(args.policy_path), *Path(args.policy_path).parents]):
             raise ValueError('Policy symlink components forbidden')
         if args.retry_reason:
@@ -142,11 +185,16 @@ def main(argv=None):
         state = {'schema_version': 1, 'workflow': args.workflow, 'execution_id': execution,
                  'inputs': inputs, 'run_ids': [execution + '-run'], 'profile_path': str(profile),
                  'codex_config_path': str(config), 'reconciliation_policy': dict(data, repository=inputs['repository'])}
-        manage.atomic_json(path, state)
+        persist(state, path)
     print('Execution journal: ' + str(path), flush=True)
+    print('Workflow evidence root: ' + (state['inputs'].get('diagnostics_root') or str(path.parent / 'run-evidence')), flush=True)
     result = submit(state, path, deployed)
     print(json.dumps(result, sort_keys=True))
-    return 0 if result.get('state') == 'completed' and (result.get('output') or {}).get('status') not in ('failed', 'blocked') else 1
+    output = result.get('output') or {}
+    good = ('processed', 'reconciled', 'dry-run', 'pushed', 'patch_ready', 'no_change')
+    return 0 if (result.get('state') == 'completed' and output.get('status') in good
+                 and not any(r.get('status') in ('failed', 'blocked', 'reconciling', 'deferred')
+                             for r in output.get('incidents', []))) else 1
 
 
 if __name__ == '__main__':
